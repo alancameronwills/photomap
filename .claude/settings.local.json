@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-Content *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(cd C:\\\\Users\\\\alan\\\\source\\\\photomap; Get-ChildItem -Exclude node_modules,uploads -Recurse | Where-Object { !$_.PSIsContainer } | Select-Object -ExpandProperty FullName | Where-Object { $_ -notmatch 'node_modules' })",
+      "PowerShell(Start-Process \"http://localhost:3000\")",
+      "PowerShell(Invoke-WebRequest -Uri \"http://localhost:3000/auth/status\" -UseBasicParsing | Select-Object -ExpandProperty Content)",
+      "PowerShell($session = New-Object Microsoft.PowerShell.Commands.WebRequestSession; $body = '{\"password\":\"changeme\"}'; $r = Invoke-WebRequest -Uri \"http://localhost:3000/auth/login\" -Method POST -Body $body -ContentType \"application/json\" -WebSession $session -UseBasicParsing; $r.Content; $r2 = Invoke-WebRequest -Uri \"http://localhost:3000/auth/status\" -WebSession $session -UseBasicParsing; $r2.Content)",
+      "PowerShell(Out-Null *)",
+      "PowerShell(Invoke-WebRequest -Uri \"http://localhost:3000/api/pois\" -UseBasicParsing | Select-Object -ExpandProperty Content)",
+      "PowerShell(Start-Sleep -Seconds 1; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::PrimaryScreen | Select-Object Bounds)",
+      "PowerShell(Invoke-WebRequest -Uri \"http://localhost:3000/api/pois\" -UseBasicParsing | Select-Object -ExpandProperty Content | ConvertFrom-Json | ForEach-Object { \"$\\($_.title\\) @ $\\($_.lat\\),$\\($_.lng\\)\" })",
+      "PowerShell(netstat *)",
+      "WebFetch(domain:maps.nls.uk)",
+      "WebFetch(domain:mapseries-tilesets.s3.amazonaws.com)"
+    ]
+  }
+}

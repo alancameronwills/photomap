@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>PhotoMap</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Leaflet MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Top toolbar -->
+<div id="toolbar">
+  <div id="toolbar-left">
+    <span id="app-title">PhotoMap</span>
+  </div>
+  <div id="toolbar-right">
+    <button id="btn-edit-mode" class="toolbar-btn">Edit Mode</button>
+    <button id="btn-logout" class="toolbar-btn hidden">Sign Out</button>
+  </div>
+</div>
+
+<!-- Login modal -->
+<div id="login-overlay" class="overlay hidden">
+  <div class="modal">
+    <h2>Sign In to Edit</h2>
+    <input type="password" id="login-password" placeholder="Password" autocomplete="current-password"/>
+    <div id="login-error" class="error-msg hidden">Incorrect password</div>
+    <div class="modal-actions">
+      <button id="btn-login-cancel" class="btn-secondary">Cancel</button>
+      <button id="btn-login-submit" class="btn-primary">Sign In</button>
+    </div>
+  </div>
+</div>
+
+<!-- Preview panel (slides up on click) -->
+<div id="preview-panel" class="hidden">
+  <div id="preview-panel-inner">
+    <button id="preview-close" class="close-btn" aria-label="Close">&#x2715;</button>
+    <div id="preview-photos"></div>
+    <div id="preview-title"></div>
+    <div id="preview-note"></div>
+    <div id="preview-actions">
+      <button id="btn-view-full" class="btn-primary">View Full</button>
+      <button id="btn-edit-poi" class="btn-secondary hidden">Edit</button>
+    </div>
+  </div>
+</div>
+
+<!-- Full POI modal -->
+<div id="full-overlay" class="overlay hidden">
+  <div class="modal modal-large">
+    <button class="close-btn modal-close-btn" id="full-close">&#x2715;</button>
+    <div id="full-photos" class="full-photos-grid"></div>
+    <h2 id="full-title"></h2>
+    <div id="full-note" class="full-note"></div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" class="overlay hidden">
+  <button id="lightbox-close" class="close-btn lightbox-close">&#x2715;</button>
+  <button id="lightbox-prev" class="lightbox-nav lightbox-prev">&#8249;</button>
+  <img id="lightbox-img" src="" alt=""/>
+  <button id="lightbox-next" class="lightbox-nav lightbox-next">&#8250;</button>
+</div>
+
+<!-- Edit POI modal -->
+<div id="edit-overlay" class="overlay hidden">
+  <div class="modal modal-large">
+    <button class="close-btn modal-close-btn" id="edit-close">&#x2715;</button>
+    <h2 id="edit-modal-title">Edit Point of Interest</h2>
+
+    <label for="edit-title-input">Title</label>
+    <input type="text" id="edit-title-input" placeholder="Optional title"/>
+
+    <label for="edit-note-input">Note</label>
+    <textarea id="edit-note-input" rows="6" placeholder="Optional notes..."></textarea>
+
+    <div id="edit-photos-section">
+      <label>Photos</label>
+      <div id="edit-photos-list"></div>
+      <div id="edit-drop-zone" class="drop-zone">
+        <span>Drop photos here or <label for="edit-file-input" class="file-label">browse</label></span>
+        <input type="file" id="edit-file-input" multiple accept="image/*" style="display:none"/>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="btn-delete-poi" class="btn-danger">Delete POI</button>
+      <div style="flex:1"></div>
+      <button id="btn-edit-cancel" class="btn-secondary">Cancel</button>
+      <button id="btn-edit-save" class="btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- New POI modal (when clicking map) -->
+<div id="new-poi-overlay" class="overlay hidden">
+  <div class="modal modal-large">
+    <button class="close-btn modal-close-btn" id="new-poi-close">&#x2715;</button>
+    <h2>New Point of Interest</h2>
+    <p class="muted">Add a title, note, or photos — at least one is required.</p>
+
+    <label for="new-title-input">Title</label>
+    <input type="text" id="new-title-input" placeholder="Optional title"/>
+
+    <label for="new-note-input">Note</label>
+    <textarea id="new-note-input" rows="4" placeholder="Optional notes..."></textarea>
+
+    <div id="new-photos-section">
+      <label>Photos</label>
+      <div id="new-drop-zone" class="drop-zone">
+        <span>Drop photos here or <label for="new-file-input" class="file-label">browse</label></span>
+        <input type="file" id="new-file-input" multiple accept="image/*" style="display:none"/>
+      </div>
+      <div id="new-photos-preview" class="new-photos-preview"></div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="btn-new-cancel" class="btn-secondary">Cancel</button>
+      <button id="btn-new-save" class="btn-primary">Create POI</button>
+    </div>
+  </div>
+</div>
+
+<!-- Upload progress toast -->
+<div id="upload-toast" class="toast hidden">
+  <div id="upload-toast-msg">Uploading photos...</div>
+  <div id="upload-progress-bar"><div id="upload-progress-fill"></div></div>
+</div>
+
+<!-- Layer switcher -->
+<div id="layer-switcher"></div>
+
+<!-- Edit mode indicator -->
+<div id="edit-indicator" class="hidden">
+  <span>&#9998; Edit Mode — click map to add POI &nbsp;|&nbsp; drag markers to reposition</span>
+  <button id="btn-bulk-upload" class="btn-sm">Upload Photos</button>
+  <input type="file" id="bulk-file-input" multiple accept="image/*" style="display:none"/>
+</div>
+
+<script src="/config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
