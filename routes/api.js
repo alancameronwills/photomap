@@ -147,14 +147,18 @@ router.post('/upload-photos', requireAuth, upload.array('photos', 100), async (r
   const mapLat = parseFloat(req.body.mapLat) || 51.5;
   const mapLng = parseFloat(req.body.mapLng) || -0.1;
 
-  // Process each uploaded photo
+  // GPS extracted client-side (before scaling stripped EXIF); fall back to
+  // server-side extraction only for files the client couldn't read.
+  const clientGps = req.body.gpsData ? JSON.parse(req.body.gpsData) : {};
+
   const processed = [];
-  for (const file of req.files || []) {
+  for (let i = 0; i < (req.files || []).length; i++) {
+    const file = req.files[i];
     const thumbFilename = path.basename(file.filename, path.extname(file.filename)) + '_thumb.jpg';
     const thumbPath = path.join(thumbDir, thumbFilename);
     try { await generateThumb(file.path, thumbPath); } catch (e) { console.error('Thumb:', e.message); }
 
-    const gps = await extractGPS(file.path);
+    const gps = clientGps[i] ?? await extractGPS(file.path);
     processed.push({ file, gps, thumbFilename });
   }
 

@@ -19,6 +19,48 @@ function makeNlsLayer() {
   );
 }
 
+// ── Photo scaling ────────────────────────────────────────────────────────────
+// Scales a File down to maxPx × maxPx (preserving aspect ratio) using canvas,
+// re-encoding as JPEG. Files already within the limit are returned unchanged.
+// If the browser can't decode the format (e.g. HEIC), the original is returned.
+function scaleImageFile(file, maxPx = 1000) {
+  return new Promise(resolve => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const { naturalWidth: w, naturalHeight: h } = img;
+      if (w <= maxPx && h <= maxPx) { resolve(file); return; }
+      const scale = Math.min(maxPx / w, maxPx / h);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(w * scale);
+      canvas.height = Math.round(h * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(blob => {
+        resolve(new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' }));
+      }, 'image/jpeg', 0.92);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
+// Extracts GPS from original files (before scaling strips EXIF) using the
+// browser-loaded exifr lite build. Returns {index: {lat, lng}} for files that
+// have GPS; indices with no GPS are absent from the result.
+async function extractGPSFromFiles(files) {
+  if (typeof exifr === 'undefined') return {};
+  const result = {};
+  await Promise.all(files.map(async (file, i) => {
+    try {
+      const gps = await exifr.gps(file);
+      if (gps && gps.latitude && gps.longitude)
+        result[i] = { lat: gps.latitude, lng: gps.longitude };
+    } catch (e) { /* no GPS or unsupported format */ }
+  }));
+  return result;
+}
+
 // ── Tile layers config ──────────────────────────────────────────────────────
 const TILE_LAYERS = {
   'OpenStreetMap': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -461,10 +503,11 @@ async function saveEditDialog() {
     pois[editingPoiId] = updated;
     addOrUpdateMarker(updated);
 
-    // Upload any new photos
+    // Upload any new photos (scaled client-side)
     if (pendingEditFiles.length > 0) {
+      const scaled = await Promise.all(pendingEditFiles.map(f => scaleImageFile(f)));
       const fd = new FormData();
-      pendingEditFiles.forEach(f => fd.append('photos', f));
+      scaled.forEach(f => fd.append('photos', f));
       const result = await api('POST', `/pois/${editingPoiId}/photos`, fd);
       pois[editingPoiId] = result;
       addOrUpdateMarker(result);
@@ -549,8 +592,9 @@ async function saveNewPoi() {
     });
 
     if (pendingNewFiles.length > 0) {
+      const scaled = await Promise.all(pendingNewFiles.map(f => scaleImageFile(f)));
       const fd = new FormData();
-      pendingNewFiles.forEach(f => fd.append('photos', f));
+      scaled.forEach(f => fd.append('photos', f));
       poi = await api('POST', `/pois/${poi.id}/photos`, fd);
     }
 
@@ -573,12 +617,19 @@ bulkFileInput.addEventListener('change', () => {
 
 async function uploadPhotosToMap(files) {
   const center = map.getCenter();
-  showUploadToast('Uploading photos…', 0);
+  showUploadToast('Processing photos…', 0);
+
+  // Extract GPS from originals before scaling strips EXIF, then scale
+  const [gpsMap, scaled] = await Promise.all([
+    extractGPSFromFiles(files),
+    Promise.all(files.map(f => scaleImageFile(f))),
+  ]);
 
   const fd = new FormData();
-  files.forEach(f => fd.append('photos', f));
+  scaled.forEach(f => fd.append('photos', f));
   fd.append('mapLat', center.lat);
   fd.append('mapLng', center.lng);
+  if (Object.keys(gpsMap).length) fd.append('gpsData', JSON.stringify(gpsMap));
 
   try {
     // Simulate progress
