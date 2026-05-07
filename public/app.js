@@ -134,6 +134,12 @@ function handleZoomForLayer() {
 }
 
 map.on('zoomend', handleZoomForLayer);
+map.on('zoomend', () => {
+  const show = map.getZoom() >= LABEL_MIN_ZOOM;
+  Object.values(markers).forEach(m => {
+    if (m.getTooltip()) show ? m.openTooltip() : m.closeTooltip();
+  });
+});
 map.on('moveend', () => {
   const c = map.getCenter();
   localStorage.setItem('mapView', JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
@@ -310,15 +316,14 @@ function setEditMode(on) {
 }
 
 // ── Marker creation ──────────────────────────────────────────────────────────
-function createMarkerIcon(poi) {
-  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  const label = poi.title ? `<div class="poi-label">${esc(poi.title)}</div>` : '';
+const LABEL_MIN_ZOOM = 13;
 
+function createMarkerIcon(poi) {
   if (poi.photos && poi.photos.length > 0) {
     const thumb = poi.photos[0].thumb_url || `/uploads/thumbs/${poi.photos[0].thumb_filename}`;
     const editCls = editMode ? ' edit-mode' : '';
     return L.divIcon({
-      html: `<div class="poi-marker-wrap"><div class="photo-marker${editCls}"><img src="${thumb}" alt="" draggable="false"/></div>${label}</div>`,
+      html: `<div class="photo-marker${editCls}"><img src="${thumb}" alt="" draggable="false"/></div>`,
       className: '',
       iconSize: [56, 56],
       iconAnchor: [28, 28],
@@ -326,7 +331,7 @@ function createMarkerIcon(poi) {
   }
   const editCls = editMode ? ' edit-mode' : '';
   return L.divIcon({
-    html: `<div class="poi-marker-wrap"><div class="dot-marker${editCls}"></div>${label}</div>`,
+    html: `<div class="dot-marker${editCls}"></div>`,
     className: '',
     iconSize: [18, 18],
     iconAnchor: [9, 9],
@@ -367,6 +372,11 @@ function addOrUpdateMarker(poi) {
       console.error('Failed to update POI location', err);
     }
   });
+
+  if (poi.title) {
+    marker.bindTooltip(poi.title, { permanent: true, direction: 'auto', className: 'poi-label' });
+    if (map.getZoom() < LABEL_MIN_ZOOM) marker.closeTooltip();
+  }
 
   markers[poi.id] = marker;
   if (editMode) {
