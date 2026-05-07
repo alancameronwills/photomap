@@ -492,6 +492,9 @@ function openLightbox(poi, startIdx) {
   lightboxImages = poi.photos.map(ph => ph.url || `/uploads/originals/${ph.filename}`);
   lightboxIndex = startIdx;
   lightboxImg.src = lightboxImages[lightboxIndex];
+  const multi = lightboxImages.length > 1;
+  $('lightbox-prev').classList.toggle('hidden', !multi);
+  $('lightbox-next').classList.toggle('hidden', !multi);
   lightbox.classList.remove('hidden');
 }
 
