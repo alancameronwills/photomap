@@ -64,6 +64,34 @@ body, html {
 }
 
 /* ── POI Markers ── */
+.poi-marker-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.poi-label {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #000;
+  font-size: 12pt;
+  line-height: 1.3;
+  padding: 2px 5px;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+  text-align: center;
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  pointer-events: none;
+}
+
+
 .photo-marker {
   width: 56px;
   height: 56px;

@@ -311,11 +311,14 @@ function setEditMode(on) {
 
 // ── Marker creation ──────────────────────────────────────────────────────────
 function createMarkerIcon(poi) {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const label = poi.title ? `<div class="poi-label">${esc(poi.title)}</div>` : '';
+
   if (poi.photos && poi.photos.length > 0) {
     const thumb = poi.photos[0].thumb_url || `/uploads/thumbs/${poi.photos[0].thumb_filename}`;
     const editCls = editMode ? ' edit-mode' : '';
     return L.divIcon({
-      html: `<div class="photo-marker${editCls}"><img src="${thumb}" alt="" draggable="false"/></div>`,
+      html: `<div class="poi-marker-wrap"><div class="photo-marker${editCls}"><img src="${thumb}" alt="" draggable="false"/></div>${label}</div>`,
       className: '',
       iconSize: [56, 56],
       iconAnchor: [28, 28],
@@ -323,7 +326,7 @@ function createMarkerIcon(poi) {
   }
   const editCls = editMode ? ' edit-mode' : '';
   return L.divIcon({
-    html: `<div class="dot-marker${editCls}"></div>`,
+    html: `<div class="poi-marker-wrap"><div class="dot-marker${editCls}"></div>${label}</div>`,
     className: '',
     iconSize: [18, 18],
     iconAnchor: [9, 9],
