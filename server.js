@@ -30,6 +30,9 @@ app.get('/config.js', (req, res) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/dist')));
+app.use('/vendor/markercluster', express.static(path.join(__dirname, 'node_modules/leaflet.markercluster/dist')));
+app.use('/vendor/exifr', express.static(path.join(__dirname, 'node_modules/exifr/dist')));
 
 app.use('/auth', require('./routes/auth'));
 app.use('/api', require('./routes/api'));

@@ -95,8 +95,9 @@ router.delete('/pois/:id', requireAuth, (req, res) => {
       path.join(thumbDir, photo.thumb_filename || ''),
     ].forEach(f => { try { if (f && fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {} });
   }
+  const nodeResult = db.deletePoiLinkedNodes(id);
   db.deletePoi(id);
-  res.json({ ok: true });
+  res.json({ ok: true, deletedNodeIds: nodeResult.deletedNodeIds, deletedRouteIds: nodeResult.deletedRouteIds });
 });
 
 // POST /api/pois/:id/photos — add photos to existing POI
@@ -229,6 +230,64 @@ router.post('/upload-photos', requireAuth, upload.array('photos', 100), async (r
   }
 
   res.json({ pois: resultPois });
+});
+
+// ── Route endpoints ──────────────────────────────────────────────────────────
+
+router.get('/routes', (req, res) => {
+  res.json(db.getAllRoutes());
+});
+
+router.post('/routes', requireAuth, (req, res) => {
+  const { name, color } = req.body;
+  res.json(db.createRoute(name, color));
+});
+
+router.put('/routes/:id', requireAuth, (req, res) => {
+  const route = db.updateRoute(Number(req.params.id), req.body);
+  if (!route) return res.status(404).json({ error: 'Not found' });
+  res.json(route);
+});
+
+router.post('/routes/:id/split', requireAuth, (req, res) => {
+  const { nodeId } = req.body;
+  if (nodeId == null) return res.status(400).json({ error: 'nodeId required' });
+  const result = db.splitRoute(Number(req.params.id), Number(nodeId));
+  if (!result) return res.status(404).json({ error: 'Node not found in route' });
+  res.json(result);
+});
+
+router.delete('/routes/:id', requireAuth, (req, res) => {
+  if (!db.getRouteById(Number(req.params.id))) return res.status(404).json({ error: 'Not found' });
+  db.deleteRoute(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+router.post('/routes/:id/nodes', requireAuth, (req, res) => {
+  const { lat, lng, poiId, prepend, afterNodeId } = req.body;
+  if (lat == null || lng == null) return res.status(400).json({ error: 'lat and lng required' });
+  if (afterNodeId != null) {
+    const node = db.insertRouteNode(Number(req.params.id), Number(afterNodeId), Number(lat), Number(lng), poiId);
+    if (!node) return res.status(404).json({ error: 'afterNodeId not found' });
+    return res.json(node);
+  }
+  res.json(db.addRouteNode(Number(req.params.id), Number(lat), Number(lng), poiId, !!prepend));
+});
+
+router.put('/route-nodes/:id', requireAuth, (req, res) => {
+  const { lat, lng, poiId } = req.body;
+  const node = db.updateRouteNode(Number(req.params.id), {
+    lat: lat != null ? Number(lat) : undefined,
+    lng: lng != null ? Number(lng) : undefined,
+    poiId: poiId !== undefined ? poiId : undefined,
+  });
+  if (!node) return res.status(404).json({ error: 'Not found' });
+  res.json(node);
+});
+
+router.delete('/route-nodes/:id', requireAuth, (req, res) => {
+  const result = db.deleteRouteNode(Number(req.params.id));
+  res.json(result);
 });
 
 module.exports = router;

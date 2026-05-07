@@ -6,13 +6,13 @@
   <title>PhotoMap</title>
 
   <!-- Leaflet -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css"/>
+  <script src="/vendor/leaflet/leaflet.js"></script>
 
   <!-- Leaflet MarkerCluster -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <link rel="stylesheet" href="/vendor/markercluster/MarkerCluster.css"/>
+  <link rel="stylesheet" href="/vendor/markercluster/MarkerCluster.Default.css"/>
+  <script src="/vendor/markercluster/leaflet.markercluster.js"></script>
 
   <link rel="stylesheet" href="style.css"/>
 </head>
@@ -26,6 +26,9 @@
     <span id="app-title">PhotoMap</span>
   </div>
   <div id="toolbar-right">
+    <button id="btn-bulk-upload" class="toolbar-btn hidden">Upload Photos</button>
+    <input type="file" id="bulk-file-input" multiple accept="image/*" style="display:none"/>
+    <button id="btn-enter-route-edit" class="toolbar-btn hidden">Edit Routes</button>
     <button id="btn-edit-mode" class="toolbar-btn">Edit Mode</button>
     <button id="btn-logout" class="toolbar-btn hidden">Sign Out</button>
   </div>
@@ -147,11 +150,19 @@
 <!-- Edit mode indicator -->
 <div id="edit-indicator" class="hidden">
   <span>&#9998; Edit Mode — click map to add POI &nbsp;|&nbsp; drag markers to reposition</span>
-  <button id="btn-bulk-upload" class="btn-sm">Upload Photos</button>
-  <input type="file" id="bulk-file-input" multiple accept="image/*" style="display:none"/>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/lite.umd.js"></script>
+<!-- Route editing indicator (replaces edit-indicator while route-edit is active) -->
+<div id="route-edit-indicator" class="hidden">
+  <input type="color" id="route-color-input" value="#ff69b4" class="route-color-input" title="Route colour" disabled>
+  <span id="route-edit-hint" class="route-edit-hint"></span>
+  <button id="btn-split-route" class="btn-sm" disabled>Split Route</button>
+  <button id="btn-delete-route" class="btn-sm btn-danger-sm" disabled>Delete Route</button>
+  <button id="btn-delete-node" class="btn-sm btn-danger-sm" disabled>Delete Node</button>
+  <button id="btn-undo-node" class="btn-sm" disabled>Undo</button>
+</div>
+
+<script src="/vendor/exifr/lite.umd.js"></script>
 <script src="/config.js"></script>
 <script src="app.js"></script>
 </body>

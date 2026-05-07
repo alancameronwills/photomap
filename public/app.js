@@ -83,9 +83,11 @@ const TILE_LAYERS = {
 };
 
 // ── Map init ────────────────────────────────────────────────────────────────
+const savedMapView = (() => { try { return JSON.parse(localStorage.getItem('mapView')); } catch { return null; } })();
+
 const map = L.map('map', {
-  center: [54, -2],
-  zoom: 6,
+  center: savedMapView ? [savedMapView.lat, savedMapView.lng] : [54, -2],
+  zoom: savedMapView ? savedMapView.zoom : 6,
   layers: [TILE_LAYERS['OpenStreetMap']],
   zoomControl: false,
 });
@@ -132,6 +134,10 @@ function handleZoomForLayer() {
 }
 
 map.on('zoomend', handleZoomForLayer);
+map.on('moveend', () => {
+  const c = map.getCenter();
+  localStorage.setItem('mapView', JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
+});
 
 function initLayerSwitcher() {
   const container = document.getElementById('layer-switcher');
@@ -175,12 +181,14 @@ map.addLayer(clusterGroup);
 
 // ── State ───────────────────────────────────────────────────────────────────
 let editMode = false;
+let routeEditMode = false;
 let authenticated = false;
 let pois = {};           // id → poi object
 let markers = {};        // id → Leaflet marker
 let activePoi = null;    // currently previewed/opened POI
 let newPoiLatLng = null; // temp latlng for new POI from map click
 let pendingNewFiles = []; // FileList accumulated for new POI dialog
+let pendingNodeForPoi = null; // route node waiting to be linked to a new POI
 let lightboxImages = [];
 let lightboxIndex = 0;
 
@@ -243,9 +251,7 @@ async function checkAuth() {
   const data = await fetch('/auth/status').then(r => r.json());
   authenticated = data.authenticated;
   if (authenticated) {
-    btnEditMode.classList.add('active');
     btnLogout.classList.remove('hidden');
-    setEditMode(true);
   }
 }
 
@@ -269,15 +275,35 @@ async function logout() {
 
 // ── Edit mode ────────────────────────────────────────────────────────────────
 function setEditMode(on) {
+  if (!on && routeEditMode) exitRouteEditMode();
   editMode = on;
   editIndicator.classList.toggle('hidden', !on);
+  $('btn-bulk-upload').classList.toggle('hidden', !on);
+  $('btn-enter-route-edit').classList.toggle('hidden', !on);
+  btnEditMode.textContent = on ? 'Done Editing' : 'Edit Mode';
   btnEditMode.classList.toggle('active', on);
   document.getElementById('map').classList.toggle('edit-active', on);
 
-  // Toggle marker draggability and icon style
+  // Switch markers between the cluster group (view mode) and the raw map (edit
+  // mode). Markers inside a cluster have _icon === null, so dragging.enable()
+  // silently fails for them regardless of _enabled state. Adding directly to the
+  // map guarantees _icon is set and drag listeners attach correctly.
   for (const [id, marker] of Object.entries(markers)) {
-    if (on) marker.dragging.enable(); else marker.dragging.disable();
-    marker.setIcon(createMarkerIcon(pois[id]));
+    if (on) {
+      // Move to raw map FIRST so _map and _icon are live when enable() runs.
+      // Calling enable() before addTo() causes addHooks() to bail (_map is null),
+      // sets _enabled=true anyway, then the post-addTo enable() is a silent no-op.
+      clusterGroup.removeLayer(marker);
+      marker.setIcon(createMarkerIcon(pois[id]));
+      marker.addTo(map);
+      marker.dragging.disable(); // reset _enabled in case a previous stale enable() set it
+      marker.dragging.enable();  // _map and _icon are now live → listeners attach
+    } else {
+      marker.dragging.disable();
+      map.removeLayer(marker);
+      marker.setIcon(createMarkerIcon(pois[id]));
+      clusterGroup.addLayer(marker);
+    }
   }
 
   btnEditPoi.classList.toggle('hidden', !on);
@@ -306,18 +332,21 @@ function createMarkerIcon(poi) {
 
 function addOrUpdateMarker(poi) {
   if (markers[poi.id]) {
-    clusterGroup.removeLayer(markers[poi.id]);
+    if (editMode) map.removeLayer(markers[poi.id]);
+    else clusterGroup.removeLayer(markers[poi.id]);
   }
 
   const marker = L.marker([poi.lat, poi.lng], {
     icon: createMarkerIcon(poi),
-    draggable: editMode,
+    draggable: false,
     title: poi.title || '',
   });
 
   marker.on('click', (e) => {
     L.DomEvent.stopPropagation(e);
-    if (editMode) {
+    if (routeEditMode) {
+      addNodeAtPoi(poi.id);
+    } else if (editMode) {
       openEditDialog(poi.id);
     } else {
       showPreview(poi.id);
@@ -329,18 +358,27 @@ function addOrUpdateMarker(poi) {
     try {
       const updated = await api('PUT', `/pois/${poi.id}`, { lat: latlng.lat, lng: latlng.lng });
       pois[poi.id] = updated;
+      syncPoiLinkedNodes(poi.id, latlng.lat, latlng.lng);
+      await trySnapPoiToNodes(poi.id, latlng);
     } catch (err) {
       console.error('Failed to update POI location', err);
     }
   });
 
   markers[poi.id] = marker;
-  clusterGroup.addLayer(marker);
+  if (editMode) {
+    marker.addTo(map);
+    marker.dragging.disable();
+    marker.dragging.enable();
+  } else {
+    clusterGroup.addLayer(marker);
+  }
 }
 
 function removeMarker(poiId) {
   if (markers[poiId]) {
-    clusterGroup.removeLayer(markers[poiId]);
+    if (editMode) map.removeLayer(markers[poiId]);
+    else clusterGroup.removeLayer(markers[poiId]);
     delete markers[poiId];
   }
 }
@@ -526,7 +564,23 @@ async function deleteCurrentPoi() {
   if (!editingPoiId) return;
   if (!confirm('Delete this point of interest and all its photos?')) return;
   try {
-    await api('DELETE', `/pois/${editingPoiId}`);
+    const result = await api('DELETE', `/pois/${editingPoiId}`);
+    const deletedNodeIds = result.deletedNodeIds || [];
+    const deletedRouteIds = new Set(result.deletedRouteIds || []);
+    const survivingRouteIds = new Set(deletedNodeIds.map(id => nodeRouteId[id]).filter(rid => rid && !deletedRouteIds.has(rid)));
+    for (const id of deletedNodeIds) {
+      if (routeNodeMarkers[id]) { map.removeLayer(routeNodeMarkers[id]); delete routeNodeMarkers[id]; }
+      delete nodeRouteId[id];
+    }
+    for (const rid of deletedRouteIds) {
+      if (routePolylines[rid]) { map.removeLayer(routePolylines[rid]); delete routePolylines[rid]; }
+      delete routes[rid];
+      if (activeRouteId === rid) activeRouteId = null;
+    }
+    for (const rid of survivingRouteIds) {
+      const route = routes[rid];
+      if (route) { route.nodes = route.nodes.filter(n => !deletedNodeIds.includes(n.id)); redrawPolyline(rid); }
+    }
     delete pois[editingPoiId];
     removeMarker(editingPoiId);
     closeEditDialog();
@@ -556,6 +610,7 @@ function closeNewPoiDialog() {
   newPoiOverlay.classList.add('hidden');
   newPoiLatLng = null;
   pendingNewFiles = [];
+  pendingNodeForPoi = null;
 }
 
 
@@ -600,6 +655,24 @@ async function saveNewPoi() {
 
     pois[poi.id] = poi;
     addOrUpdateMarker(poi);
+
+    // If this POI was created by clicking a route node, link them
+    if (pendingNodeForPoi) {
+      const node = pendingNodeForPoi;
+      try {
+        await api('PUT', `/route-nodes/${node.id}`, { poiId: poi.id });
+        node.poi_id = poi.id;
+        const marker = routeNodeMarkers[node.id];
+        if (marker) {
+          marker.dragging.disable();
+          marker.setIcon(nodeIcon(node, false));
+          // POI-linked nodes don't drag independently
+        }
+      } catch (e) {
+        console.error('Failed to link node to POI', e);
+      }
+    }
+
     closeNewPoiDialog();
     map.panTo([poi.lat, poi.lng]);
   } catch (err) {
@@ -709,9 +782,11 @@ setupDropZone(editDropZone, editFileInput, (files) => {
 
 // ── Event wiring ─────────────────────────────────────────────────────────────
 
-// Map click in edit mode
+// Map click
 map.on('click', (e) => {
-  if (editMode) {
+  if (routeEditMode) {
+    handleRouteMapClick(e);
+  } else if (editMode) {
     openNewPoiDialog(e.latlng);
   } else {
     closePreview();
@@ -837,8 +912,617 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
+// ── Routes ───────────────────────────────────────────────────────────────────
+
+// Dedicated Leaflet pane so polylines render below POI markers
+map.createPane('routesPane');
+map.getPane('routesPane').style.zIndex = 350;
+
+let routes = {};           // routeId → route (with .nodes[])
+let routePolylines = {};   // routeId → L.Polyline
+let routeNodeMarkers = {}; // nodeId  → L.Marker
+let nodeRouteId = {};      // nodeId  → routeId
+let activeRouteId = null;
+let selectedNodeId = null;
+let undoStack = [];         // nodeIds added in the current route-edit session
+let waitingForRouteStart = false; // true until the first meaningful click after entering route-edit
+let extendingFromStart = false;   // true when prepending (user clicked the start node)
+
+const ZERO_ICON = L.divIcon({ html: '', className: '', iconSize: [0, 0], iconAnchor: [0, 0] });
+
+function nodeIcon(node, selected) {
+  // Linked nodes sit exactly on their POI — hide unless selected.
+  if (node.poi_id && !selected) return ZERO_ICON;
+  // Unlinked nodes are only shown in route-edit mode.
+  if (!node.poi_id && !routeEditMode && !selected) return ZERO_ICON;
+  const cls = ['route-node'];
+  if (node.poi_id) cls.push('poi-linked');
+  if (selected) cls.push('selected');
+  const route = routes[node.route_id || nodeRouteId[node.id]];
+  const color = (selected && route) ? route.color : undefined;
+  const style = color ? `border-color:${color};box-shadow:0 0 0 3px ${color}55,0 1px 5px rgba(0,0,0,.5)` : '';
+  return L.divIcon({
+    html: `<div class="${cls.join(' ')}" style="${style}"></div>`,
+    className: '',
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+}
+
+function redrawPolyline(routeId) {
+  const route = routes[routeId];
+  const poly = routePolylines[routeId];
+  if (!route || !poly) return;
+  poly.setLatLngs(route.nodes.map(n => [n.lat, n.lng]));
+}
+
+function setupNodeMarkerEvents(marker, node) {
+  marker.on('click', (e) => {
+    L.DomEvent.stopPropagation(e);
+    const current = routes[nodeRouteId[node.id]]?.nodes.find(n => n.id === node.id) || node;
+    if (routeEditMode) {
+      if (waitingForRouteStart) {
+        const route = routes[nodeRouteId[node.id]];
+        if (route && isStartOrEnd(node.id, route)) {
+          activeRouteId = route.id;
+          extendingFromStart = (route.nodes[0].id === node.id);
+          waitingForRouteStart = false;
+          setActiveRoute(activeRouteId);
+          updateRouteHint();
+        }
+      }
+      if (selectedNodeId === node.id) deselectNode();
+      else selectNode(node.id);
+    } else if (editMode) {
+      if (current.poi_id) openEditDialog(current.poi_id);
+      else createPoiAtNode(current);
+    }
+  });
+
+  marker.on('drag', () => {
+    const ll = marker.getLatLng();
+    const n = routes[nodeRouteId[node.id]]?.nodes.find(x => x.id === node.id);
+    if (n) { n.lat = ll.lat; n.lng = ll.lng; }
+    redrawPolyline(nodeRouteId[node.id]);
+  });
+
+  marker.on('dragend', async () => {
+    const ll = marker.getLatLng();
+    try {
+      // If the node was POI-linked, dragging it breaks the association — the user
+      // is explicitly repositioning it. Clear the link, then check for a new snap.
+      if (node.poi_id) {
+        node.poi_id = null;
+        marker.dragging.disable();
+        marker.setIcon(nodeIcon(node, selectedNodeId === node.id));
+        marker.dragging.enable();
+      }
+      const snapped = await trySnapNodeToPoi(node);
+      if (!snapped) await api('PUT', `/route-nodes/${node.id}`, { lat: ll.lat, lng: ll.lng, poiId: null });
+    } catch (e) { console.error('Node save failed', e); }
+  });
+}
+
+function renderRoute(route) {
+  // Clear any existing map objects for this route
+  clearRoute(route.id);
+
+  const color = route.color || '#ff69b4';
+  const latlngs = route.nodes.map(n => [n.lat, n.lng]);
+
+  const poly = L.polyline(latlngs, {
+    color, weight: 10, opacity: 0.5, pane: 'routesPane',
+  }).addTo(map);
+  routePolylines[route.id] = poly;
+
+  poly.on('click', async (e) => {
+    L.DomEvent.stopPropagation(e);
+    e.originalEvent.stopPropagation();
+    if (!routeEditMode) return;
+    const liveRoute = routes[route.id];
+    if (!liveRoute || liveRoute.nodes.length < 2) return;
+
+    if (waitingForRouteStart) {
+      activeRouteId = route.id;
+      waitingForRouteStart = false;
+      extendingFromStart = false;
+      setActiveRoute(activeRouteId);
+    }
+
+    const segIdx = findClosestSegmentIndex(liveRoute, e.latlng);
+    if (segIdx < 0) return;
+
+    try {
+      const node = await api('POST', `/routes/${route.id}/nodes`, {
+        lat: e.latlng.lat, lng: e.latlng.lng, afterNodeId: liveRoute.nodes[segIdx].id,
+      });
+      node.route_id = route.id;
+      nodeRouteId[node.id] = route.id;
+      liveRoute.nodes.splice(segIdx + 1, 0, node);
+      const marker = L.marker([node.lat, node.lng], {
+        icon: nodeIcon(node, false), draggable: false, zIndexOffset: 200,
+      }).addTo(map);
+      setupNodeMarkerEvents(marker, node);
+      routeNodeMarkers[node.id] = marker;
+      enableNodeDrag(marker);
+      redrawPolyline(route.id);
+    } catch (err) { console.error('Insert node failed:', err); }
+  });
+
+  for (const node of route.nodes) {
+    nodeRouteId[node.id] = route.id;
+    const marker = L.marker([node.lat, node.lng], {
+      icon: nodeIcon(node, false),
+      draggable: false,
+      zIndexOffset: 200,
+    }).addTo(map);
+    setupNodeMarkerEvents(marker, node);
+    routeNodeMarkers[node.id] = marker;
+  }
+}
+
+function clearRoute(routeId) {
+  if (routePolylines[routeId]) { map.removeLayer(routePolylines[routeId]); delete routePolylines[routeId]; }
+  const route = routes[routeId];
+  if (route) {
+    for (const n of route.nodes) {
+      if (routeNodeMarkers[n.id]) { map.removeLayer(routeNodeMarkers[n.id]); delete routeNodeMarkers[n.id]; }
+      delete nodeRouteId[n.id];
+    }
+  }
+}
+
+async function loadRoutes() {
+  const data = await api('GET', '/routes');
+  routes = {};
+  for (const r of data) routes[r.id] = r;
+  for (const r of data) renderRoute(r);
+}
+
+// ── Route segment hit-testing ────────────────────────────────────────────────
+
+function ptToSegmentDistPx(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  if (dx === 0 && dy === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+function findClosestSegmentIndex(route, latlng) {
+  const pt = map.latLngToContainerPoint(latlng);
+  let bestIdx = -1, bestDist = Infinity;
+  for (let i = 0; i < route.nodes.length - 1; i++) {
+    const a = map.latLngToContainerPoint([route.nodes[i].lat, route.nodes[i].lng]);
+    const b = map.latLngToContainerPoint([route.nodes[i + 1].lat, route.nodes[i + 1].lng]);
+    const d = ptToSegmentDistPx(pt, a, b);
+    if (d < bestDist) { bestDist = d; bestIdx = i; }
+  }
+  return bestIdx;
+}
+
+// ── Drag-to-link snapping ─────────────────────────────────────────────────────
+
+const LINK_SNAP_PX = 30; // centre-to-centre pixel distance that triggers linking
+
+function screenDist(latlng1, latlng2) {
+  const a = map.latLngToContainerPoint(latlng1);
+  const b = map.latLngToContainerPoint(latlng2);
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+// Called at the end of a node drag. If the node is unlinked and now sits within
+// LINK_SNAP_PX of a POI, link it and snap its position to the POI exactly.
+// Returns true if a snap occurred (so the caller can skip saving the raw position).
+async function trySnapNodeToPoi(node) {
+  if (node.poi_id) return false;
+  const marker = routeNodeMarkers[node.id];
+  if (!marker) return false;
+  const ll = marker.getLatLng();
+  for (const poi of Object.values(pois)) {
+    if (screenDist(ll, [poi.lat, poi.lng]) <= LINK_SNAP_PX) {
+      await api('PUT', `/route-nodes/${node.id}`, { lat: poi.lat, lng: poi.lng, poiId: poi.id });
+      node.lat = poi.lat; node.lng = poi.lng; node.poi_id = poi.id;
+      marker.dragging.disable();
+      marker.setLatLng([poi.lat, poi.lng]);
+      marker.setIcon(nodeIcon(node, selectedNodeId === node.id));
+      redrawPolyline(nodeRouteId[node.id]);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Called at the end of a POI drag. Links any unlinked route nodes within
+// LINK_SNAP_PX, snapping them to the POI's new position.
+async function trySnapPoiToNodes(poiId, poiLatlng) {
+  for (const route of Object.values(routes)) {
+    for (const node of route.nodes) {
+      if (node.poi_id) continue;
+      if (screenDist(poiLatlng, [node.lat, node.lng]) <= LINK_SNAP_PX) {
+        await api('PUT', `/route-nodes/${node.id}`, { lat: poiLatlng.lat, lng: poiLatlng.lng, poiId: poiId });
+        node.lat = poiLatlng.lat; node.lng = poiLatlng.lng; node.poi_id = poiId;
+        const m = routeNodeMarkers[node.id];
+        if (m) {
+          m.dragging.disable();
+          m.setLatLng([poiLatlng.lat, poiLatlng.lng]);
+          m.setIcon(nodeIcon(node, selectedNodeId === node.id));
+        }
+        redrawPolyline(route.id);
+      }
+    }
+  }
+}
+
+// Called after a POI is dragged — updates any linked node positions client-side
+function syncPoiLinkedNodes(poiId, lat, lng) {
+  for (const route of Object.values(routes)) {
+    let changed = false;
+    for (const node of route.nodes) {
+      if (node.poi_id === poiId) {
+        node.lat = lat; node.lng = lng;
+        routeNodeMarkers[node.id]?.setLatLng([lat, lng]);
+        changed = true;
+      }
+    }
+    if (changed) redrawPolyline(route.id);
+  }
+}
+
+// ── Route edit mode ──────────────────────────────────────────────────────────
+
+const routeEditIndicator = $('route-edit-indicator');
+const routeColorInput    = $('route-color-input');
+const btnDeleteNode      = $('btn-delete-node');
+const btnSplitRoute      = $('btn-split-route');
+const btnDeleteRoute     = $('btn-delete-route');
+
+function setActiveRoute(routeId) {
+  activeRouteId = routeId;
+}
+
+function enableNodeDrag(marker) {
+  // setIcon() swaps the DOM element and strips listeners, but doesn't reset
+  // dragging._enabled — so a subsequent enable() silently no-ops.
+  // Always disable first to clear the guard flag, then re-enable on the live element.
+  marker.dragging.disable();
+  marker.dragging.enable();
+}
+
+// ── Route-start helpers ───────────────────────────────────────────────────────
+
+function isStartOrEnd(nodeId, route) {
+  const n = route.nodes;
+  return n.length > 0 && (n[0].id === nodeId || n[n.length - 1].id === nodeId);
+}
+
+// Returns {node, route} if poiId has exactly one linked node that is at the
+// start or end of its route; otherwise null.
+function findLinkedStartEndNode(poiId) {
+  const linked = [];
+  for (const route of Object.values(routes)) {
+    for (const node of route.nodes) {
+      if (node.poi_id === poiId) linked.push({ node, route });
+    }
+  }
+  if (linked.length !== 1) return null;
+  const { node, route } = linked[0];
+  return isStartOrEnd(node.id, route) ? { node, route } : null;
+}
+
+function updateRouteHint() {
+  const el = document.getElementById('route-edit-hint');
+  if (!el) return;
+  el.textContent = waitingForRouteStart
+    ? 'click a start/end node or POI to extend a route · click map to start a new route'
+    : 'click map · click POI to link · click node to select';
+}
+
+async function createNewRouteAndActivate() {
+  const color = routeColorInput.value || '#ff69b4';
+  const route = await api('POST', '/routes', { color });
+  routes[route.id] = route;
+  renderRoute(route);
+  waitingForRouteStart = false;
+  extendingFromStart = false;
+  setActiveRoute(route.id);
+  updateRouteHint();
+}
+
+function refreshAllNodeIcons() {
+  for (const route of Object.values(routes)) {
+    for (const node of route.nodes) {
+      const marker = routeNodeMarkers[node.id];
+      if (!marker) continue;
+      const selected = selectedNodeId === node.id;
+      marker.dragging.disable();
+      marker.setIcon(nodeIcon(node, selected));
+      if (routeEditMode) marker.dragging.enable();
+    }
+  }
+}
+
+function enterRouteEditMode() {
+  routeEditMode = true;
+  waitingForRouteStart = true;
+  extendingFromStart = false;
+  activeRouteId = null;
+  $('btn-enter-route-edit').textContent = 'Done Editing Routes';
+  routeEditIndicator.classList.remove('hidden');
+  document.getElementById('map').classList.add('route-edit-active');
+  routeColorInput.disabled = true;
+  updateRouteHint();
+  refreshAllNodeIcons();
+}
+
+function exitRouteEditMode() {
+  deselectNode();
+  routeEditMode = false;
+  waitingForRouteStart = false;
+  extendingFromStart = false;
+  undoStack = [];
+  updateUndoBtn();
+  $('btn-enter-route-edit').textContent = 'Edit Routes';
+  routeEditIndicator.classList.add('hidden');
+  document.getElementById('map').classList.remove('route-edit-active');
+  refreshAllNodeIcons();
+}
+
+function selectNode(nodeId) {
+  if (selectedNodeId) deselectNode();
+  selectedNodeId = nodeId;
+  const marker = routeNodeMarkers[nodeId];
+  const node = routes[nodeRouteId[nodeId]]?.nodes.find(n => n.id === nodeId);
+  if (!marker || !node) return;
+  // Disable drag before setIcon so the _enabled flag is cleared; the new icon
+  // element needs a fresh enable() call after the DOM swap.
+  marker.dragging.disable();
+  marker.setIcon(nodeIcon(node, true));
+  marker.dragging.enable();
+  btnDeleteNode.disabled = false;
+  btnSplitRoute.disabled = false;
+  btnDeleteRoute.disabled = false;
+  routeColorInput.value = routes[nodeRouteId[nodeId]]?.color || '#ff69b4';
+  routeColorInput.disabled = false;
+}
+
+function deselectNode() {
+  if (!selectedNodeId) return;
+  const marker = routeNodeMarkers[selectedNodeId];
+  const node = routes[nodeRouteId[selectedNodeId]]?.nodes.find(n => n.id === selectedNodeId);
+  if (marker && node) {
+    marker.dragging.disable();
+    marker.setIcon(nodeIcon(node, false));
+    // Restore drag on the new icon if still in route-edit mode
+    if (routeEditMode) marker.dragging.enable();
+  }
+  selectedNodeId = null;
+  btnDeleteNode.disabled = true;
+  btnSplitRoute.disabled = true;
+  btnDeleteRoute.disabled = true;
+  routeColorInput.disabled = true;
+}
+
+function updateUndoBtn() {
+  $('btn-undo-node').disabled = undoStack.length === 0;
+}
+
+async function deleteNode(nodeId) {
+  if (selectedNodeId === nodeId) deselectNode();
+  try {
+    const result = await api('DELETE', `/route-nodes/${nodeId}`);
+    for (const id of result.deletedNodeIds) {
+      if (routeNodeMarkers[id]) { map.removeLayer(routeNodeMarkers[id]); delete routeNodeMarkers[id]; }
+      delete nodeRouteId[id];
+    }
+    if (result.routeDeleted) {
+      if (routePolylines[result.routeId]) { map.removeLayer(routePolylines[result.routeId]); delete routePolylines[result.routeId]; }
+      delete routes[result.routeId];
+      if (activeRouteId === result.routeId) activeRouteId = null;
+    } else {
+      const route = routes[result.routeId];
+      if (route) { route.nodes = route.nodes.filter(n => !result.deletedNodeIds.includes(n.id)); redrawPolyline(result.routeId); }
+    }
+  } catch (e) { alert('Failed to delete node: ' + e.message); }
+}
+
+async function deleteSelectedNode() {
+  if (!selectedNodeId) return;
+  const nodeId = selectedNodeId;
+  await deleteNode(nodeId);
+  undoStack = undoStack.filter(id => id !== nodeId);
+  updateUndoBtn();
+}
+
+async function undoLastNode() {
+  // Skip any nodes that were already deleted another way (e.g. via Delete Node button)
+  while (undoStack.length > 0) {
+    const nodeId = undoStack.pop();
+    if (nodeRouteId[nodeId] !== undefined) {
+      await deleteNode(nodeId);
+      break;
+    }
+  }
+  updateUndoBtn();
+}
+
+async function addNodeToRoute(routeId, lat, lng, poiId) {
+  try {
+    const node = await api('POST', `/routes/${routeId}/nodes`, {
+      lat, lng, poiId: poiId || null, prepend: extendingFromStart,
+    });
+    node.route_id = routeId;
+    const route = routes[routeId];
+    if (extendingFromStart) route.nodes.unshift(node); else route.nodes.push(node);
+    nodeRouteId[node.id] = routeId;
+
+    const marker = L.marker([node.lat, node.lng], {
+      icon: nodeIcon(node, false), draggable: false, zIndexOffset: 200,
+    }).addTo(map);
+    setupNodeMarkerEvents(marker, node);
+    routeNodeMarkers[node.id] = marker;
+    if (routeEditMode) enableNodeDrag(marker);
+    undoStack.push(node.id);
+    updateUndoBtn();
+
+    // Create polyline on first node; update otherwise
+    if (route.nodes.length === 1) {
+      routePolylines[routeId] = L.polyline([[lat, lng]], {
+        color: route.color, weight: 10, opacity: 0.5, pane: 'routesPane',
+      }).addTo(map);
+    } else {
+      redrawPolyline(routeId);
+    }
+  } catch (e) { console.error('Failed to add node:', e); }
+}
+
+async function handleRouteMapClick(e) {
+  if (selectedNodeId) deselectNode();
+  if (waitingForRouteStart) await createNewRouteAndActivate();
+  if (!activeRouteId) return;
+  addNodeToRoute(activeRouteId, e.latlng.lat, e.latlng.lng, null);
+}
+
+// In regular edit mode: clicking an unlinked node opens the new-POI dialog
+// pre-positioned at the node. After creation the node is linked to the new POI.
+function createPoiAtNode(node) {
+  pendingNodeForPoi = node;
+  openNewPoiDialog({ lat: node.lat, lng: node.lng });
+}
+
+async function addNodeAtPoi(poiId) {
+  if (waitingForRouteStart) {
+    const hit = findLinkedStartEndNode(poiId);
+    if (hit) {
+      // Extend the existing route from this end
+      activeRouteId = hit.route.id;
+      extendingFromStart = (hit.route.nodes[0].id === hit.node.id);
+      waitingForRouteStart = false;
+      setActiveRoute(activeRouteId);
+      updateRouteHint();
+      return;
+    }
+    // New route, first node linked to this POI
+    await createNewRouteAndActivate();
+  }
+  if (!activeRouteId) return;
+  const poi = pois[poiId];
+  if (!poi) return;
+  addNodeToRoute(activeRouteId, poi.lat, poi.lng, poiId);
+}
+
+// ── Route edit event wiring ───────────────────────────────────────────────────
+
+$('btn-enter-route-edit').addEventListener('click', () => {
+  if (routeEditMode) exitRouteEditMode(); else enterRouteEditMode();
+});
+
+
+routeColorInput.addEventListener('input', () => {
+  if (!selectedNodeId) return;
+  const routeId = nodeRouteId[selectedNodeId];
+  if (!routeId) return;
+  const color = routeColorInput.value;
+  if (routes[routeId]) routes[routeId].color = color;
+  routePolylines[routeId]?.setStyle({ color });
+});
+routeColorInput.addEventListener('change', async () => {
+  if (!selectedNodeId) return;
+  const routeId = nodeRouteId[selectedNodeId];
+  if (!routeId) return;
+  try { await api('PUT', `/routes/${routeId}`, { color: routeColorInput.value }); }
+  catch (e) { console.error('Failed to save colour', e); }
+});
+
+async function splitSelectedRoute() {
+  if (!selectedNodeId) return;
+  const routeId = nodeRouteId[selectedNodeId];
+  if (!routeId) return;
+  const nodeId = selectedNodeId;
+  deselectNode();
+  try {
+    const result = await api('POST', `/routes/${routeId}/split`, { nodeId });
+
+    // Remove split node
+    if (routeNodeMarkers[nodeId]) { map.removeLayer(routeNodeMarkers[nodeId]); delete routeNodeMarkers[nodeId]; }
+    delete nodeRouteId[nodeId];
+    undoStack = undoStack.filter(id => id !== nodeId);
+
+    // Remove deleted head node markers
+    for (const id of result.deletedHeadNodeIds) {
+      if (routeNodeMarkers[id]) { map.removeLayer(routeNodeMarkers[id]); delete routeNodeMarkers[id]; }
+      delete nodeRouteId[id];
+    }
+
+    // Remove deleted tail node markers
+    for (const id of result.deletedTailNodeIds) {
+      if (routeNodeMarkers[id]) { map.removeLayer(routeNodeMarkers[id]); delete routeNodeMarkers[id]; }
+      delete nodeRouteId[id];
+      undoStack = undoStack.filter(uid => uid !== id);
+    }
+
+    if (result.headDeleted) {
+      if (routePolylines[routeId]) { map.removeLayer(routePolylines[routeId]); delete routePolylines[routeId]; }
+      delete routes[routeId];
+      if (activeRouteId === routeId) activeRouteId = null;
+    } else {
+      const route = routes[routeId];
+      if (route) {
+        const tailIds = new Set(result.newRoute ? result.newRoute.nodes.map(n => n.id) : result.deletedTailNodeIds);
+        route.nodes = route.nodes.filter(n => n.id !== nodeId && !tailIds.has(n.id));
+        redrawPolyline(routeId);
+      }
+    }
+
+    if (result.newRoute) {
+      // Clear stale markers for tail nodes before re-rendering
+      for (const n of result.newRoute.nodes) {
+        if (routeNodeMarkers[n.id]) { map.removeLayer(routeNodeMarkers[n.id]); delete routeNodeMarkers[n.id]; }
+        delete nodeRouteId[n.id];
+      }
+      routes[result.newRoute.id] = result.newRoute;
+      renderRoute(result.newRoute);
+      if (routeEditMode) {
+        for (const n of result.newRoute.nodes) {
+          const m = routeNodeMarkers[n.id];
+          if (m) enableNodeDrag(m);
+        }
+      }
+    }
+
+    updateUndoBtn();
+  } catch (e) { alert('Split failed: ' + e.message); }
+}
+
+async function deleteSelectedRoute() {
+  if (!selectedNodeId) return;
+  const routeId = nodeRouteId[selectedNodeId];
+  if (!routeId) return;
+  if (!confirm('Delete this entire route?')) return;
+  deselectNode();
+  try {
+    await api('DELETE', `/routes/${routeId}`);
+    clearRoute(routeId);
+    delete routes[routeId];
+    if (activeRouteId === routeId) activeRouteId = null;
+    undoStack = undoStack.filter(id => nodeRouteId[id] !== undefined);
+    updateUndoBtn();
+  } catch (e) { alert('Delete route failed: ' + e.message); }
+}
+
+btnDeleteNode.addEventListener('click', deleteSelectedNode);
+$('btn-undo-node').addEventListener('click', undoLastNode);
+btnSplitRoute.addEventListener('click', splitSelectedRoute);
+btnDeleteRoute.addEventListener('click', deleteSelectedRoute);
+
+document.addEventListener('keydown', (e) => {
+  if (!routeEditMode) return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+  if (e.key === 'Delete') { e.preventDefault(); deleteSelectedNode(); }
+  if (e.key === 'z' && e.ctrlKey) { e.preventDefault(); undoLastNode(); }
+});
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initLayerSwitcher();
 (async () => {
-  await Promise.all([checkAuth(), loadPois()]);
+  await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
 })();
