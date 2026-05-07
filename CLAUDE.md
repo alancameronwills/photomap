@@ -11,6 +11,19 @@ npm run dev        # nodemon --env-file=.env server.js (auto-reload; does not ki
 
 The server runs on port 3000 by default (`PORT` env var overrides this). `kill-server.js` is the prestart hook — it uses PowerShell's `Get-NetTCPConnection` to find and kill the process on port 3000.
 
+AWS deployment uses SAM: `sam build && sam deploy` (requires Docker + SAM CLI). `samconfig.toml` (gitignored) holds the saved deploy parameters.
+
+## Deployment modes
+
+The codebase supports two deployment modes selected automatically by environment variables:
+
+| Mode | Trigger | DB | Photo storage | Sessions |
+|---|---|---|---|---|
+| **Local** | No `POIS_TABLE` set | SQLite (`db-sqlite.js`) | Local disk (`uploads/`) | In-memory |
+| **AWS** | `POIS_TABLE` set (by SAM) | DynamoDB (`db-dynamo.js`) | S3 (`PHOTOS_BUCKET`) | DynamoDB (`SESSIONS_TABLE`) |
+
+**`db.js`** is a one-line router that loads `db-dynamo.js` or `db-sqlite.js` based on `POIS_TABLE`.
+
 ## Environment
 
 All configuration lives in `.env` (gitignored). Key variables:
@@ -22,28 +35,49 @@ All configuration lives in `.env` (gitignored). Key variables:
 | `SESSION_SECRET` | Express session signing key | `photomap-dev-secret` |
 | `PORT` | HTTP port | `3000` |
 
+AWS-only (set via `template.yaml` / SAM, not `.env`):
+
+| Variable | Purpose |
+|---|---|
+| `POIS_TABLE` / `PHOTOS_TABLE` / `ROUTES_TABLE` / `NODES_TABLE` / `SESSIONS_TABLE` | DynamoDB table names |
+| `PHOTOS_BUCKET` | S3 bucket for photo storage |
+
 `MAPTILER_KEY` is exposed to the browser via `GET /config.js` → `window.APP_CONFIG.maptilerKey`. No other env vars reach the client.
 
 ## Architecture
 
 ### Backend (Node.js / Express)
 
-**`server.js`** — entry point. Mounts routes, serves `public/` as static files, serves `uploads/` at `/uploads`, injects env config at `/config.js`, and exposes npm package dist files at `/vendor/leaflet`, `/vendor/markercluster`, `/vendor/exifr`.
+**`server.js`** — entry point. Mounts routes, serves `public/` as static files, injects env config at `/config.js`, and exposes npm package dist files at `/vendor/leaflet`, `/vendor/markercluster`, `/vendor/exifr`. In AWS mode: redirects `/uploads/*` to S3 presigned URLs and uses a DynamoDB session store. In local mode: serves `uploads/` as static files and uses the default in-memory session store. Exports `{ app }` for `lambda.js`; calls `app.listen` only when not running in Lambda.
 
-**`db.js`** — single SQLite file (`photomap.db`) via `better-sqlite3`. Opens synchronously at startup, creates tables on first run. Exports plain functions (no ORM); all queries are prepared statements.
+**`lambda.js`** — AWS Lambda entry point. Wraps `app` from `server.js` using `@vendia/serverless-express`.
 
-Key functions beyond basic CRUD:
+**`db.js`** — thin router: loads `db-dynamo.js` or `db-sqlite.js` based on `POIS_TABLE`.
+
+**`db-sqlite.js`** — SQLite implementation via `better-sqlite3`. Opens synchronously at startup, creates tables on first run. All queries are synchronous prepared statements.
+
+**`db-dynamo.js`** — DynamoDB implementation. All functions are async and return Promises. IDs are UUIDs (vs auto-increment integers in SQLite). Route node `poi_id` is omitted from items (not stored as NULL) when unset, since DynamoDB GSI keys cannot be NULL.
+
+Both db modules export the same function signatures:
 - `haversineMeters` / `findNearestPoi` — used by the bulk-upload route to geo-group photos
 - `deletePoiLinkedNodes(poiId)` — removes all route nodes linked to a POI, cascades routes that fall below 2 nodes; called before `deletePoi`
 - `deleteRouteNode(id)` — returns `{deletedNodeIds, routeDeleted, routeId}`; cascades the route when ≤1 node remains
 - `insertRouteNode(routeId, afterNodeId, lat, lng, poiId)` — inserts between two nodes using floating-point bisection of `order_index`
-- `splitRoute(routeId, splitNodeId)` — transactionally deletes the split node, moves tail nodes (≥2) to a new route, cleans up degenerate remainders; returns `{headDeleted, deletedHeadNodeIds, deletedTailNodeIds, newRoute}`
+- `splitRoute(routeId, splitNodeId)` — deletes the split node, moves tail nodes (≥2) to a new route, cleans up degenerate remainders; returns `{headDeleted, deletedHeadNodeIds, deletedTailNodeIds, newRoute}`
 
-**`routes/auth.js`** — stateless single-user auth. Login compares plaintext against `ADMIN_PASSWORD`, sets `req.session.authenticated = true`.
+**`routes/auth.js`** — stateless single-user auth. Login compares plaintext against `ADMIN_PASSWORD`, calls `req.session.save()` explicitly before responding (required on Lambda where the process may freeze before the async session write completes).
 
-**`routes/api.js`** — all POI, photo, and route endpoints. Photo uploads go through `multer` → `sharp` thumbnail (200×200 JPEG in `uploads/thumbs/`). `POST /api/upload-photos` is the bulk import path: groups photos into POIs by proximity (10 m threshold). GPS is supplied by the client as a `gpsData` JSON field; server-side `exifr` extraction is the fallback. `POST /routes/:id/split` delegates to `db.splitRoute`. `DELETE /route-nodes/:id` returns the full deletion result so the client can do surgical cleanup.
+**`routes/api.js`** — all POI, photo, and route endpoints. Storage behaviour is selected at startup by `IS_AWS = !!process.env.PHOTOS_BUCKET`:
+- **Local**: `multer.memoryStorage()` → `sharp` in memory → write to `uploads/originals/` and `uploads/thumbs/` via `fs`. Photo URLs are plain `/uploads/...` paths.
+- **AWS**: `multer.memoryStorage()` → `sharp` in memory → `PutObjectCommand` to S3. All POI responses include presigned `url` and `thumb_url` fields (1-hour expiry) so the browser loads photos directly from S3 without routing through Lambda.
+
+`POST /api/upload-photos` is the bulk import path. The client batches uploads in groups of 10 (API Gateway HTTP API has a 10 MB request limit). Groups photos by GPS proximity (10 m threshold). GPS is supplied by the client as a `gpsData` JSON field; server-side `exifr` extraction is the fallback.
+
+`POST /routes/:id/split` delegates to `db.splitRoute`. `DELETE /route-nodes/:id` returns the full deletion result so the client can do surgical cleanup.
 
 **`middleware/requireAuth.js`** — guards all write endpoints; reads `req.session.authenticated`.
+
+**`template.yaml`** — AWS SAM template. Defines Lambda function, API Gateway HTTP API, five DynamoDB tables (PAY_PER_REQUEST), and S3 bucket. `scripts/deploy.sh` wraps `sam build && sam deploy`.
 
 ### Frontend (`public/`)
 
@@ -51,13 +85,13 @@ No build step — plain JS loaded directly by the browser. Scripts served locall
 
 **`app.js`** (~1530 lines) organised into sections:
 
-- **Photo scaling / GPS extraction** — `scaleImageFile(file, maxPx=1000)` scales via canvas; `extractGPSFromFiles(files)` reads EXIF from originals before scaling strips it. Both run in parallel in `uploadPhotosToMap`, which then posts scaled files plus a `gpsData` JSON field. The server prefers `gpsData[i]` over re-extracting from the scaled file.
+- **Photo scaling / GPS extraction** — `scaleImageFile(file, maxPx=1000)` scales via canvas; `extractGPSFromFiles(files)` reads EXIF from originals before scaling strips it. Both run in parallel in `uploadPhotosToMap`, which batches the scaled files into groups of 10 and posts each batch to `POST /api/upload-photos` with a `gpsData` JSON field. The server prefers `gpsData[i]` over re-extracting from the scaled file.
+- **Photo URLs** — all photo display uses `ph.url || '/uploads/originals/' + ph.filename` and `ph.thumb_url || '/uploads/thumbs/' + ph.thumb_filename`. On AWS the `url`/`thumb_url` fields are presigned S3 URLs returned by the API; on local they are absent and the fallback paths are used.
 - **Tile layers** — `TILE_LAYERS` keyed by display name. All limited-zoom layers use `maxNativeZoom` (not `maxZoom`) so the map zoom is never capped. `handleZoomForLayer` fires on `zoomend`; `aerialFallback` flag is separate from `activeLayerName` so the intended layer is restored on zoom-out. Fallback threshold is `maxNativeZoom + 1`.
 - **Map state persistence** — zoom and centre are saved to `localStorage` on every `moveend` and restored before the map is constructed.
 - **Marker rendering** — POIs render as circular photo thumbnails (`divIcon`) or blue dots. Markers live in a `L.markerClusterGroup` in view mode and are moved directly onto `map` in edit mode (necessary for drag to work — clustered markers have `_icon = null`).
 - **Marker drag fix** — `setIcon()` swaps the DOM element but doesn't reset `dragging._enabled`; always call `disable() → setIcon() → enable()` or `addTo(map) → disable() → enable()`.
 - **Edit mode** — `setEditMode(on)` moves markers between cluster and map, toggles toolbar buttons (Upload Photos, Edit Routes) and the edit-indicator banner. Always starts off on page load.
-- **Bulk upload flow** — posts to `POST /api/upload-photos` with `mapLat/mapLng` and `gpsData`; server returns POI objects; client calls `addOrUpdateMarker` for each.
 
 #### Route editing
 
@@ -88,9 +122,11 @@ pois         (id, lat, lng, title, note, created_at, updated_at)
   └── photos (id, poi_id, filename, thumb_filename, original_name, order_index, created_at)
 
 routes       (id, name, color, created_at)
-  └── route_nodes (id, route_id, order_index REAL, lat, lng, poi_id → pois.id ON DELETE SET NULL)
+  └── route_nodes (id, route_id, order_index REAL, lat, lng, poi_id → pois.id)
 ```
 
-- `route_nodes.order_index` is a `REAL` so `insertRouteNode` can bisect without renumbering.
-- Deleting a route cascades its nodes. Deleting a POI sets linked `route_nodes.poi_id = NULL` (FK `ON DELETE SET NULL`); `deletePoiLinkedNodes` then removes those orphaned nodes and cleans up sub-2-node routes.
-- Photo files: `uploads/originals/{uuid}.{ext}` and `uploads/thumbs/{uuid}_thumb.jpg`. The API route manually deletes files on POI/photo delete.
+- `id` fields are auto-increment integers in SQLite; UUID strings in DynamoDB.
+- `route_nodes.order_index` is a float so `insertRouteNode` can bisect without renumbering.
+- **SQLite**: deleting a route cascades its nodes; deleting a POI sets `route_nodes.poi_id = NULL` via FK. `deletePoiLinkedNodes` then removes orphaned nodes and cleans up sub-2-node routes.
+- **DynamoDB**: no FK cascades — all cascade logic is implemented explicitly in `db-dynamo.js`. `poi_id` is omitted from route node items (not stored as NULL) when unset; DynamoDB GSI key attributes cannot hold NULL values.
+- Photo files: `uploads/originals/{uuid}.{ext}` and `uploads/thumbs/{uuid}_thumb.jpg` (local), or `originals/{uuid}.{ext}` and `thumbs/{uuid}_thumb.jpg` (S3 keys).
