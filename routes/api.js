@@ -1,293 +1,291 @@
 const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const sharp = require('sharp');
+const multer  = require('multer');
+const path    = require('path');
+const fs      = require('fs');
+const crypto  = require('crypto');
+const sharp   = require('sharp');
 const requireAuth = require('../middleware/requireAuth');
 const db = require('../db');
 
-function newUUID() {
-  return crypto.randomUUID();
-}
-
 const router = express.Router();
+const IS_AWS = !!process.env.PHOTOS_BUCKET;
+const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-const uploadDir = path.join(__dirname, '..', 'uploads', 'originals');
-const thumbDir = path.join(__dirname, '..', 'uploads', 'thumbs');
-[uploadDir, thumbDir].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
+// ── Storage setup (local disk vs S3) ─────────────────────────────────────────
 
-const storage = multer.diskStorage({
-  destination: uploadDir,
-  filename: (req, file, cb) => cb(null, newUUID() + path.extname(file.originalname).toLowerCase()),
-});
-const upload = multer({
-  storage,
-  limits: { fileSize: 50 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (/^image\/(jpeg|jpg|png|gif|webp|heic|heif)$/i.test(file.mimetype)) cb(null, true);
-    else cb(new Error('Only image files are accepted'));
-  },
-});
+let upload, processPhoto, deletePhotoFiles, withPhotoUrls, withPhotoUrlsMany;
 
-async function generateThumb(srcPath, thumbPath) {
-  await sharp(srcPath)
-    .rotate()
-    .resize(200, 200, { fit: 'cover', position: 'centre' })
-    .jpeg({ quality: 80 })
-    .toFile(thumbPath);
+if (IS_AWS) {
+  const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+  const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+  const s3 = new S3Client({});
+  const BUCKET = process.env.PHOTOS_BUCKET;
+
+  upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 },
+    fileFilter: (req, file, cb) =>
+      /^image\/(jpeg|jpg|png|gif|webp|heic|heif)$/i.test(file.mimetype) ? cb(null, true) : cb(new Error('Only image files are accepted')),
+  });
+
+  processPhoto = async (file) => {
+    const uuid = crypto.randomUUID();
+    const ext  = path.extname(file.originalname).toLowerCase();
+    const filename      = uuid + ext;
+    const thumbFilename = uuid + '_thumb.jpg';
+    const thumbBuf = await sharp(file.buffer).rotate().resize(200, 200, { fit: 'cover', position: 'centre' }).jpeg({ quality: 80 }).toBuffer();
+    await Promise.all([
+      s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: `originals/${filename}`,      Body: file.buffer, ContentType: file.mimetype })),
+      s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: `thumbs/${thumbFilename}`,    Body: thumbBuf,    ContentType: 'image/jpeg' })),
+    ]);
+    return { filename, thumbFilename };
+  };
+
+  deletePhotoFiles = async (filename, thumbFilename) => {
+    const del = key => key && s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key })).catch(() => {});
+    await Promise.all([del(`originals/${filename}`), del(`thumbs/${thumbFilename}`)]);
+  };
+
+  const sign = key => getSignedUrl(s3, new GetObjectCommand({ Bucket: BUCKET, Key: key }), { expiresIn: 3600 });
+
+  withPhotoUrls = async (poi) => {
+    if (!poi) return poi;
+    const photos = await Promise.all((poi.photos || []).map(async ph => ({
+      ...ph,
+      url:       ph.filename       ? await sign(`originals/${ph.filename}`)       : null,
+      thumb_url: ph.thumb_filename ? await sign(`thumbs/${ph.thumb_filename}`)     : null,
+    })));
+    return { ...poi, photos };
+  };
+
+  withPhotoUrlsMany = pois => Promise.all(pois.map(withPhotoUrls));
+
+} else {
+  const uploadDir = path.join(__dirname, '..', 'uploads', 'originals');
+  const thumbDir  = path.join(__dirname, '..', 'uploads', 'thumbs');
+  [uploadDir, thumbDir].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
+
+  upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 },
+    fileFilter: (req, file, cb) =>
+      /^image\/(jpeg|jpg|png|gif|webp|heic|heif)$/i.test(file.mimetype) ? cb(null, true) : cb(new Error('Only image files are accepted')),
+  });
+
+  processPhoto = async (file) => {
+    const uuid = crypto.randomUUID();
+    const ext  = path.extname(file.originalname).toLowerCase();
+    const filename      = uuid + ext;
+    const thumbFilename = uuid + '_thumb.jpg';
+    fs.writeFileSync(path.join(uploadDir, filename), file.buffer);
+    const thumbBuf = await sharp(file.buffer).rotate().resize(200, 200, { fit: 'cover', position: 'centre' }).jpeg({ quality: 80 }).toBuffer();
+    fs.writeFileSync(path.join(thumbDir, thumbFilename), thumbBuf);
+    return { filename, thumbFilename };
+  };
+
+  deletePhotoFiles = async (filename, thumbFilename) => {
+    for (const f of [path.join(uploadDir, filename || ''), path.join(thumbDir, thumbFilename || '')]) {
+      try { if (f && fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
+    }
+  };
+
+  withPhotoUrls     = async poi  => poi;
+  withPhotoUrlsMany = async pois => pois;
 }
 
-async function extractGPS(filePath) {
+async function extractGPS(buffer) {
   try {
     const exifr = await import('exifr');
-    const gps = await exifr.default.gps(filePath);
-    if (gps && gps.latitude && gps.longitude) {
-      return { lat: gps.latitude, lng: gps.longitude };
-    }
-  } catch (e) { /* no GPS data */ }
+    const gps = await exifr.default.gps(buffer);
+    if (gps?.latitude && gps?.longitude) return { lat: gps.latitude, lng: gps.longitude };
+  } catch (e) {}
   return null;
 }
 
-// GET /api/pois
-router.get('/pois', (req, res) => {
-  res.json(db.getAllPois());
-});
+function parseId(id) { return IS_AWS ? id : Number(id); }
 
-// GET /api/pois/:id
-router.get('/pois/:id', (req, res) => {
-  const poi = db.getPoiById(Number(req.params.id));
+// ── POI routes ────────────────────────────────────────────────────────────────
+
+router.get('/pois', wrap(async (req, res) => {
+  res.json(await withPhotoUrlsMany(await Promise.resolve(db.getAllPois())));
+}));
+
+router.get('/pois/:id', wrap(async (req, res) => {
+  const poi = await withPhotoUrls(await Promise.resolve(db.getPoiById(parseId(req.params.id))));
   if (!poi) return res.status(404).json({ error: 'Not found' });
   res.json(poi);
-});
+}));
 
-// POST /api/pois — create empty POI
-router.post('/pois', requireAuth, (req, res) => {
+router.post('/pois', requireAuth, wrap(async (req, res) => {
   const { lat, lng, title, note } = req.body;
   if (lat == null || lng == null) return res.status(400).json({ error: 'lat and lng required' });
-  const poi = db.createPoi(Number(lat), Number(lng), title, note);
-  res.json(poi);
-});
+  res.json(await Promise.resolve(db.createPoi(Number(lat), Number(lng), title, note)));
+}));
 
-// PUT /api/pois/:id
-router.put('/pois/:id', requireAuth, (req, res) => {
-  const id = Number(req.params.id);
+router.put('/pois/:id', requireAuth, wrap(async (req, res) => {
   const { lat, lng, title, note } = req.body;
-  const poi = db.updatePoi(id, {
+  const poi = await Promise.resolve(db.updatePoi(parseId(req.params.id), {
     lat: lat != null ? Number(lat) : undefined,
     lng: lng != null ? Number(lng) : undefined,
-    title,
-    note,
-  });
+    title, note,
+  }));
   if (!poi) return res.status(404).json({ error: 'Not found' });
   res.json(poi);
-});
+}));
 
-// DELETE /api/pois/:id
-router.delete('/pois/:id', requireAuth, (req, res) => {
-  const id = Number(req.params.id);
-  const poi = db.getPoiById(id);
+router.delete('/pois/:id', requireAuth, wrap(async (req, res) => {
+  const poi = await Promise.resolve(db.getPoiById(parseId(req.params.id)));
   if (!poi) return res.status(404).json({ error: 'Not found' });
-  // Clean up photo files
-  for (const photo of poi.photos) {
-    [
-      path.join(uploadDir, photo.filename),
-      path.join(thumbDir, photo.thumb_filename || ''),
-    ].forEach(f => { try { if (f && fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {} });
-  }
-  const nodeResult = db.deletePoiLinkedNodes(id);
-  db.deletePoi(id);
+  await Promise.all(poi.photos.map(p => deletePhotoFiles(p.filename, p.thumb_filename)));
+  const nodeResult = await Promise.resolve(db.deletePoiLinkedNodes(parseId(req.params.id)));
+  await Promise.resolve(db.deletePoi(parseId(req.params.id)));
   res.json({ ok: true, deletedNodeIds: nodeResult.deletedNodeIds, deletedRouteIds: nodeResult.deletedRouteIds });
-});
+}));
 
-// POST /api/pois/:id/photos — add photos to existing POI
-router.post('/pois/:id/photos', requireAuth, upload.array('photos', 50), async (req, res) => {
-  const poiId = Number(req.params.id);
-  const poi = db.getPoiById(poiId);
+// ── Photo routes ──────────────────────────────────────────────────────────────
+
+router.post('/pois/:id/photos', requireAuth, upload.array('photos', 50), wrap(async (req, res) => {
+  const poi = await Promise.resolve(db.getPoiById(parseId(req.params.id)));
   if (!poi) return res.status(404).json({ error: 'Not found' });
-
-  const added = [];
   let orderIndex = poi.photos.length;
-
-  for (const file of req.files || []) {
-    const thumbFilename = path.basename(file.filename, path.extname(file.filename)) + '_thumb.jpg';
-    const thumbPath = path.join(thumbDir, thumbFilename);
-    try {
-      await generateThumb(file.path, thumbPath);
-    } catch (e) {
-      console.error('Thumb error:', e.message);
-    }
-    const photo = db.addPhoto(poiId, file.filename, thumbFilename, file.originalname, orderIndex++);
-    added.push(photo);
+  for (const file of (req.files || [])) {
+    const { filename, thumbFilename } = await processPhoto(file);
+    await Promise.resolve(db.addPhoto(parseId(req.params.id), filename, thumbFilename, file.originalname, orderIndex++));
   }
+  res.json(await withPhotoUrls(await Promise.resolve(db.getPoiById(parseId(req.params.id)))));
+}));
 
-  res.json(db.getPoiById(poiId));
-});
-
-// DELETE /api/photos/:id
-router.delete('/photos/:id', requireAuth, (req, res) => {
-  const photo = db.deletePhoto(Number(req.params.id));
+router.delete('/photos/:id', requireAuth, wrap(async (req, res) => {
+  const photo = await Promise.resolve(db.deletePhoto(parseId(req.params.id)));
   if (!photo) return res.status(404).json({ error: 'Not found' });
-  [
-    path.join(uploadDir, photo.filename),
-    path.join(thumbDir, photo.thumb_filename || ''),
-  ].forEach(f => { try { if (f && fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {} });
+  await deletePhotoFiles(photo.filename, photo.thumb_filename);
   res.json({ ok: true });
-});
+}));
 
-// PUT /api/pois/:id/photo-order
-router.put('/pois/:id/photo-order', requireAuth, (req, res) => {
-  const { order } = req.body; // array of photo ids
+router.put('/pois/:id/photo-order', requireAuth, wrap(async (req, res) => {
+  const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array' });
-  db.reorderPhotos(Number(req.params.id), order);
-  res.json(db.getPoiById(Number(req.params.id)));
-});
+  const ids = IS_AWS ? order : order.map(Number);
+  await Promise.resolve(db.reorderPhotos(parseId(req.params.id), ids));
+  res.json(await withPhotoUrls(await Promise.resolve(db.getPoiById(parseId(req.params.id)))));
+}));
 
-// POST /api/upload-photos — upload photos with EXIF, auto-create/group POIs
-router.post('/upload-photos', requireAuth, upload.array('photos', 100), async (req, res) => {
-  const mapLat = parseFloat(req.body.mapLat) || 51.5;
-  const mapLng = parseFloat(req.body.mapLng) || -0.1;
+// ── Bulk upload ───────────────────────────────────────────────────────────────
 
-  // GPS extracted client-side (before scaling stripped EXIF); fall back to
-  // server-side extraction only for files the client couldn't read.
+router.post('/upload-photos', requireAuth, upload.array('photos', 100), wrap(async (req, res) => {
+  const mapLat   = parseFloat(req.body.mapLat) || 51.5;
+  const mapLng   = parseFloat(req.body.mapLng) || -0.1;
   const clientGps = req.body.gpsData ? JSON.parse(req.body.gpsData) : {};
 
   const processed = [];
   for (let i = 0; i < (req.files || []).length; i++) {
     const file = req.files[i];
-    const thumbFilename = path.basename(file.filename, path.extname(file.filename)) + '_thumb.jpg';
-    const thumbPath = path.join(thumbDir, thumbFilename);
-    try { await generateThumb(file.path, thumbPath); } catch (e) { console.error('Thumb:', e.message); }
-
-    const gps = clientGps[i] ?? await extractGPS(file.path);
-    processed.push({ file, gps, thumbFilename });
+    const { filename, thumbFilename } = await processPhoto(file);
+    const gps = clientGps[i] ?? await extractGPS(file.buffer);
+    processed.push({ file, gps, filename, thumbFilename });
   }
 
-  // Separate GPS photos from no-GPS photos
-  const gpsPhotos = processed.filter(p => p.gps);
+  const gpsPhotos   = processed.filter(p => p.gps);
   const noGpsPhotos = processed.filter(p => !p.gps);
-
-  // Group GPS photos: check existing DB POIs and batch groups within 10m
-  const groups = []; // {lat, lng, photos: [], existingPoiId}
+  const groups = [];
 
   for (const item of gpsPhotos) {
     const { lat, lng } = item.gps;
     let placed = false;
-
-    // Check batch groups already formed
     for (const g of groups) {
-      if (db.haversineMeters(lat, lng, g.lat, g.lng) <= 10) {
-        g.photos.push(item);
-        placed = true;
-        break;
-      }
+      if (db.haversineMeters(lat, lng, g.lat, g.lng) <= 10) { g.photos.push(item); placed = true; break; }
     }
     if (placed) continue;
-
-    // Check existing DB POIs
-    const nearby = db.findNearestPoi(lat, lng, 10);
+    const nearby = await Promise.resolve(db.findNearestPoi(lat, lng, 10));
     if (nearby) {
       const existing = groups.find(g => g.existingPoiId === nearby.id);
-      if (existing) {
-        existing.photos.push(item);
-      } else {
-        groups.push({ lat: nearby.lat, lng: nearby.lng, photos: [item], existingPoiId: nearby.id });
-      }
+      if (existing) existing.photos.push(item);
+      else groups.push({ lat: nearby.lat, lng: nearby.lng, photos: [item], existingPoiId: nearby.id });
     } else {
       groups.push({ lat, lng, photos: [item], existingPoiId: null });
     }
   }
 
-  // All no-GPS photos go to one group at map center (check for nearby existing POI first)
   if (noGpsPhotos.length > 0) {
-    const nearby = db.findNearestPoi(mapLat, mapLng, 10);
+    const nearby = await Promise.resolve(db.findNearestPoi(mapLat, mapLng, 10));
     if (nearby) {
       const existing = groups.find(g => g.existingPoiId === nearby.id);
-      if (existing) {
-        existing.photos.push(...noGpsPhotos);
-      } else {
-        groups.push({ lat: nearby.lat, lng: nearby.lng, photos: noGpsPhotos, existingPoiId: nearby.id });
-      }
+      if (existing) existing.photos.push(...noGpsPhotos);
+      else groups.push({ lat: nearby.lat, lng: nearby.lng, photos: noGpsPhotos, existingPoiId: nearby.id });
     } else {
       groups.push({ lat: mapLat, lng: mapLng, photos: noGpsPhotos, existingPoiId: null });
     }
   }
 
-  // Create or update POIs for each group
   const resultPois = [];
   for (const group of groups) {
-    let poi;
-    if (group.existingPoiId) {
-      poi = db.getPoiById(group.existingPoiId);
-    } else {
-      poi = db.createPoi(group.lat, group.lng, null, null);
-    }
+    let poi = group.existingPoiId
+      ? await Promise.resolve(db.getPoiById(group.existingPoiId))
+      : await Promise.resolve(db.createPoi(group.lat, group.lng, null, null));
     let orderIndex = poi.photos.length;
     for (const item of group.photos) {
-      db.addPhoto(poi.id, item.file.filename, item.thumbFilename, item.file.originalname, orderIndex++);
+      await Promise.resolve(db.addPhoto(poi.id, item.filename, item.thumbFilename, item.file.originalname, orderIndex++));
     }
-    resultPois.push(db.getPoiById(poi.id));
+    resultPois.push(await withPhotoUrls(await Promise.resolve(db.getPoiById(poi.id))));
   }
 
   res.json({ pois: resultPois });
-});
+}));
 
-// ── Route endpoints ──────────────────────────────────────────────────────────
+// ── Route endpoints ───────────────────────────────────────────────────────────
 
-router.get('/routes', (req, res) => {
-  res.json(db.getAllRoutes());
-});
+router.get('/routes', wrap(async (req, res) => {
+  res.json(await Promise.resolve(db.getAllRoutes()));
+}));
 
-router.post('/routes', requireAuth, (req, res) => {
-  const { name, color } = req.body;
-  res.json(db.createRoute(name, color));
-});
+router.post('/routes', requireAuth, wrap(async (req, res) => {
+  res.json(await Promise.resolve(db.createRoute(req.body.name, req.body.color)));
+}));
 
-router.put('/routes/:id', requireAuth, (req, res) => {
-  const route = db.updateRoute(Number(req.params.id), req.body);
+router.put('/routes/:id', requireAuth, wrap(async (req, res) => {
+  const route = await Promise.resolve(db.updateRoute(parseId(req.params.id), req.body));
   if (!route) return res.status(404).json({ error: 'Not found' });
   res.json(route);
-});
+}));
 
-router.post('/routes/:id/split', requireAuth, (req, res) => {
+router.post('/routes/:id/split', requireAuth, wrap(async (req, res) => {
   const { nodeId } = req.body;
   if (nodeId == null) return res.status(400).json({ error: 'nodeId required' });
-  const result = db.splitRoute(Number(req.params.id), Number(nodeId));
+  const result = await Promise.resolve(db.splitRoute(parseId(req.params.id), IS_AWS ? nodeId : Number(nodeId)));
   if (!result) return res.status(404).json({ error: 'Node not found in route' });
   res.json(result);
-});
+}));
 
-router.delete('/routes/:id', requireAuth, (req, res) => {
-  if (!db.getRouteById(Number(req.params.id))) return res.status(404).json({ error: 'Not found' });
-  db.deleteRoute(Number(req.params.id));
+router.delete('/routes/:id', requireAuth, wrap(async (req, res) => {
+  if (!await Promise.resolve(db.getRouteById(parseId(req.params.id)))) return res.status(404).json({ error: 'Not found' });
+  await Promise.resolve(db.deleteRoute(parseId(req.params.id)));
   res.json({ ok: true });
-});
+}));
 
-router.post('/routes/:id/nodes', requireAuth, (req, res) => {
+router.post('/routes/:id/nodes', requireAuth, wrap(async (req, res) => {
   const { lat, lng, poiId, prepend, afterNodeId } = req.body;
   if (lat == null || lng == null) return res.status(400).json({ error: 'lat and lng required' });
   if (afterNodeId != null) {
-    const node = db.insertRouteNode(Number(req.params.id), Number(afterNodeId), Number(lat), Number(lng), poiId);
+    const node = await Promise.resolve(db.insertRouteNode(parseId(req.params.id), IS_AWS ? afterNodeId : Number(afterNodeId), Number(lat), Number(lng), poiId || null));
     if (!node) return res.status(404).json({ error: 'afterNodeId not found' });
     return res.json(node);
   }
-  res.json(db.addRouteNode(Number(req.params.id), Number(lat), Number(lng), poiId, !!prepend));
-});
+  res.json(await Promise.resolve(db.addRouteNode(parseId(req.params.id), Number(lat), Number(lng), poiId || null, !!prepend)));
+}));
 
-router.put('/route-nodes/:id', requireAuth, (req, res) => {
+router.put('/route-nodes/:id', requireAuth, wrap(async (req, res) => {
   const { lat, lng, poiId } = req.body;
-  const node = db.updateRouteNode(Number(req.params.id), {
-    lat: lat != null ? Number(lat) : undefined,
-    lng: lng != null ? Number(lng) : undefined,
+  const node = await Promise.resolve(db.updateRouteNode(parseId(req.params.id), {
+    lat:   lat   != null ? Number(lat)  : undefined,
+    lng:   lng   != null ? Number(lng)  : undefined,
     poiId: poiId !== undefined ? poiId : undefined,
-  });
+  }));
   if (!node) return res.status(404).json({ error: 'Not found' });
   res.json(node);
-});
+}));
 
-router.delete('/route-nodes/:id', requireAuth, (req, res) => {
-  const result = db.deleteRouteNode(Number(req.params.id));
-  res.json(result);
-});
+router.delete('/route-nodes/:id', requireAuth, wrap(async (req, res) => {
+  res.json(await Promise.resolve(db.deleteRouteNode(parseId(req.params.id))));
+}));
 
 module.exports = router;
