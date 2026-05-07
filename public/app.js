@@ -357,7 +357,14 @@ function addOrUpdateMarker(poi) {
     } else if (editMode) {
       openEditDialog(poi.id);
     } else {
-      showPreview(poi.id);
+      const p = pois[poi.id];
+      if (p && (p.title || p.note)) {
+        openFullModal(poi.id);
+      } else if (p && p.photos && p.photos.length > 0) {
+        openLightbox(p, 0);
+      } else {
+        showPreview(poi.id);
+      }
     }
   });
 
