@@ -312,10 +312,10 @@ function setEditMode(on) {
 // ── Marker creation ──────────────────────────────────────────────────────────
 function createMarkerIcon(poi) {
   if (poi.photos && poi.photos.length > 0) {
-    const thumb = poi.photos[0].thumb_filename;
+    const thumb = poi.photos[0].thumb_url || `/uploads/thumbs/${poi.photos[0].thumb_filename}`;
     const editCls = editMode ? ' edit-mode' : '';
     return L.divIcon({
-      html: `<div class="photo-marker${editCls}"><img src="/uploads/thumbs/${thumb}" alt="" draggable="false"/></div>`,
+      html: `<div class="photo-marker${editCls}"><img src="${thumb}" alt="" draggable="false"/></div>`,
       className: '',
       iconSize: [56, 56],
       iconAnchor: [28, 28],
@@ -406,7 +406,7 @@ function showPreview(poiId) {
   if (poi.photos && poi.photos.length > 0) {
     poi.photos.slice(0, 6).forEach((ph, idx) => {
       const img = document.createElement('img');
-      img.src = `/uploads/originals/${ph.filename}`;
+      img.src = ph.url || `/uploads/originals/${ph.filename}`;
       img.alt = '';
       img.addEventListener('click', () => openLightbox(poi, idx));
       previewPhotos.appendChild(img);
@@ -442,7 +442,7 @@ function openFullModal(poiId) {
   if (poi.photos && poi.photos.length > 0) {
     poi.photos.forEach((ph, idx) => {
       const img = document.createElement('img');
-      img.src = `/uploads/originals/${ph.filename}`;
+      img.src = ph.url || `/uploads/originals/${ph.filename}`;
       img.alt = '';
       img.addEventListener('click', () => openLightbox(poi, idx));
       fullPhotos.appendChild(img);
@@ -461,7 +461,7 @@ function closeFullModal() {
 
 // ── Lightbox ─────────────────────────────────────────────────────────────────
 function openLightbox(poi, startIdx) {
-  lightboxImages = poi.photos.map(ph => `/uploads/originals/${ph.filename}`);
+  lightboxImages = poi.photos.map(ph => ph.url || `/uploads/originals/${ph.filename}`);
   lightboxIndex = startIdx;
   lightboxImg.src = lightboxImages[lightboxIndex];
   lightbox.classList.remove('hidden');
@@ -504,7 +504,7 @@ function renderEditPhotosList(poi) {
     const item = document.createElement('div');
     item.className = 'edit-photo-item';
     item.innerHTML = `
-      <img src="/uploads/thumbs/${ph.thumb_filename}" alt=""/>
+      <img src="${ph.thumb_url || `/uploads/thumbs/${ph.thumb_filename}`}" alt=""/>
       <button class="delete-photo-btn" data-photo-id="${ph.id}" title="Delete photo">&#x2715;</button>
     `;
     item.querySelector('.delete-photo-btn').addEventListener('click', async (e) => {
@@ -698,34 +698,43 @@ async function uploadPhotosToMap(files) {
     Promise.all(files.map(f => scaleImageFile(f))),
   ]);
 
-  const fd = new FormData();
-  scaled.forEach(f => fd.append('photos', f));
-  fd.append('mapLat', center.lat);
-  fd.append('mapLng', center.lng);
-  if (Object.keys(gpsMap).length) fd.append('gpsData', JSON.stringify(gpsMap));
+  // API Gateway has a 10 MB request limit, so send in batches of 10
+  const BATCH = 10;
+  const allPois = {};
 
   try {
-    // Simulate progress
-    let progress = 0;
-    const progressInterval = setInterval(() => {
-      progress = Math.min(progress + 5, 85);
-      uploadFill.style.width = progress + '%';
-    }, 200);
+    for (let start = 0; start < scaled.length; start += BATCH) {
+      const batchScaled = scaled.slice(start, start + BATCH);
 
-    const result = await api('POST', '/upload-photos', fd);
+      const fd = new FormData();
+      batchScaled.forEach(f => fd.append('photos', f));
+      fd.append('mapLat', center.lat);
+      fd.append('mapLng', center.lng);
 
-    clearInterval(progressInterval);
+      // Remap GPS indices to batch-local positions
+      const batchGps = {};
+      for (let j = 0; j < batchScaled.length; j++) {
+        if (gpsMap[start + j]) batchGps[j] = gpsMap[start + j];
+      }
+      if (Object.keys(batchGps).length) fd.append('gpsData', JSON.stringify(batchGps));
+
+      uploadFill.style.width = Math.round((start / scaled.length) * 95) + '%';
+      uploadToastMsg.textContent = `Uploading… (${start + batchScaled.length}/${scaled.length})`;
+
+      const result = await api('POST', '/upload-photos', fd);
+      for (const poi of result.pois) allPois[poi.id] = poi;
+    }
+
     uploadFill.style.width = '100%';
 
-    // Update local POI store and markers
-    for (const poi of result.pois) {
+    const poiList = Object.values(allPois);
+    for (const poi of poiList) {
       pois[poi.id] = poi;
       addOrUpdateMarker(poi);
     }
 
-    // Zoom to fit all new POI locations
-    if (result.pois.length > 0) {
-      const latlngs = result.pois.map(p => [p.lat, p.lng]);
+    if (poiList.length > 0) {
+      const latlngs = poiList.map(p => [p.lat, p.lng]);
       if (latlngs.length === 1) {
         map.setView(latlngs[0], Math.max(map.getZoom(), 16));
       } else {
@@ -734,7 +743,7 @@ async function uploadPhotosToMap(files) {
     }
 
     setTimeout(hideUploadToast, 1200);
-    uploadToastMsg.textContent = `Added ${result.pois.length} location${result.pois.length !== 1 ? 's' : ''}`;
+    uploadToastMsg.textContent = `Added ${poiList.length} location${poiList.length !== 1 ? 's' : ''}`;
   } catch (err) {
     hideUploadToast();
     alert('Upload failed: ' + err.message);
