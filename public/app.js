@@ -413,6 +413,14 @@ async function loadPois() {
     pois[p.id] = p;
     addOrUpdateMarker(p);
   }
+  if (!savedMapView && data.length > 0) {
+    const latlngs = data.map(p => [p.lat, p.lng]);
+    if (latlngs.length === 1) {
+      map.setView(latlngs[0], 14);
+    } else {
+      map.fitBounds(L.latLngBounds(latlngs).pad(0.2));
+    }
+  }
 }
 
 // ── Preview panel ────────────────────────────────────────────────────────────
