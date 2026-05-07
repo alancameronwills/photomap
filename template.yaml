@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: PhotoMap serverless app — Lambda + DynamoDB + S3
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 512
+    Runtime: nodejs20.x
+    Architectures: [x86_64]
+
+Parameters:
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: Password for edit mode
+    Default: changeme
+  SessionSecret:
+    Type: String
+    NoEcho: true
+    Description: Express session signing secret
+    Default: photomap-secret-change-me
+  MaptilerKey:
+    Type: String
+    Default: ''
+    Description: MapTiler API key for historic tile layer (optional)
+
+Resources:
+
+  # ── Lambda function ──────────────────────────────────────────────────────────
+
+  PhotomapFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: lambda.handler
+      Environment:
+        Variables:
+          NODE_ENV: production
+          ADMIN_PASSWORD: !Ref AdminPassword
+          SESSION_SECRET: !Ref SessionSecret
+          MAPTILER_KEY: !Ref MaptilerKey
+          POIS_TABLE: !Ref PhotomapPois
+          PHOTOS_TABLE: !Ref PhotomapPhotos
+          ROUTES_TABLE: !Ref PhotomapRoutes
+          NODES_TABLE: !Ref PhotomapRouteNodes
+          SESSIONS_TABLE: !Ref PhotomapSessions
+          PHOTOS_BUCKET: !Ref PhotomapBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PhotomapPois
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PhotomapPhotos
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PhotomapRoutes
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PhotomapRouteNodes
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PhotomapSessions
+        - S3CrudPolicy:
+            BucketName: !Ref PhotomapBucket
+      Events:
+        ApiRoot:
+          Type: HttpApi
+          Properties:
+            Path: /
+            Method: ANY
+            ApiId: !Ref PhotomapApi
+        ApiProxy:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            ApiId: !Ref PhotomapApi
+
+  PhotomapApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+
+  # ── DynamoDB tables ──────────────────────────────────────────────────────────
+
+  PhotomapPois:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: id, KeyType: HASH }
+
+  PhotomapPhotos:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id,          AttributeType: S }
+        - { AttributeName: poi_id,      AttributeType: S }
+        - { AttributeName: order_index, AttributeType: N }
+      KeySchema:
+        - { AttributeName: id, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        - IndexName: poi_id-order_index-index
+          KeySchema:
+            - { AttributeName: poi_id,      KeyType: HASH  }
+            - { AttributeName: order_index, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+
+  PhotomapRoutes:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: id, KeyType: HASH }
+
+  PhotomapRouteNodes:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id,          AttributeType: S }
+        - { AttributeName: route_id,    AttributeType: S }
+        - { AttributeName: order_index, AttributeType: N }
+        - { AttributeName: poi_id,      AttributeType: S }
+      KeySchema:
+        - { AttributeName: id, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        - IndexName: route_id-order_index-index
+          KeySchema:
+            - { AttributeName: route_id,    KeyType: HASH  }
+            - { AttributeName: order_index, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+        - IndexName: poi_id-index
+          KeySchema:
+            - { AttributeName: poi_id, KeyType: HASH }
+          Projection: { ProjectionType: ALL }
+
+  PhotomapSessions:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: id, KeyType: HASH }
+      TimeToLiveSpecification:
+        AttributeName: expires
+        Enabled: true
+
+  # ── S3 bucket for photos ─────────────────────────────────────────────────────
+
+  PhotomapBucket:
+    Type: AWS::S3::Bucket
+
+Outputs:
+  ApiUrl:
+    Description: Application URL
+    Value: !Sub 'https://${PhotomapApi}.execute-api.${AWS::Region}.amazonaws.com'
+  PhotosBucket:
+    Description: S3 bucket for uploaded photos
+    Value: !Ref PhotomapBucket

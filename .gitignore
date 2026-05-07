@@ -4,3 +4,5 @@ uploads/
 *.db
 *.db-shm
 *.db-wal
+.aws-sam/
+samconfig.toml
