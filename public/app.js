@@ -88,7 +88,7 @@ const savedMapView = (() => { try { return JSON.parse(localStorage.getItem('mapV
 const map = L.map('map', {
   center: savedMapView ? [savedMapView.lat, savedMapView.lng] : [54, -2],
   zoom: savedMapView ? savedMapView.zoom : 6,
-  layers: [TILE_LAYERS['OpenStreetMap']],
+  layers: [TILE_LAYERS['Topographic']],
   zoomControl: false,
 });
 
@@ -97,7 +97,7 @@ L.control.zoom({ position: 'bottomright' }).addTo(map);
 // ── Layer switcher ────────────────────────────────────────────────────────────
 // activeLayerName  — the layer the user has chosen (persists through aerial fallback)
 // aerialFallback   — true while auto-showing aerial because zoom > activeLayer.maxZoom
-let activeLayerName = 'OpenStreetMap';
+let activeLayerName = 'Topographic';
 let aerialFallback = false;
 
 function displayedLayerName() {
@@ -1562,4 +1562,7 @@ document.addEventListener('keydown', (e) => {
 initLayerSwitcher();
 (async () => {
   await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
+  const overlay = document.getElementById('loading-overlay');
+  overlay.classList.add('hidden');
+  overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
 })();

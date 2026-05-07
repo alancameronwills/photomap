@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-  <title>PhotoMap</title>
+  <title>Map y Ffoto</title>
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="/vendor/leaflet/leaflet.css"/>
@@ -23,7 +23,7 @@
 <!-- Top toolbar -->
 <div id="toolbar">
   <div id="toolbar-left">
-    <span id="app-title">PhotoMap</span>
+    <span id="app-title">Map y Ffoto</span>
   </div>
   <div id="toolbar-right">
     <button id="btn-bulk-upload" class="toolbar-btn hidden">Upload Photos</button>
@@ -136,6 +136,12 @@
       <button id="btn-new-save" class="btn-primary">Create POI</button>
     </div>
   </div>
+</div>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div id="loading-spinner"></div>
+  <div id="loading-msg">Loading…</div>
 </div>
 
 <!-- Upload progress toast -->
