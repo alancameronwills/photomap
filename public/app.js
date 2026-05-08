@@ -200,6 +200,14 @@ let lightboxIndex = 0;
 let lightboxEditPoiId = null;   // non-null when lightbox opened from edit dialog
 let currentMarkerPos = null;    // {x, y} fractions 0-1, or null — while edit lightbox open
 let directionPref = 0;          // 0 = all, 1 or 2 = show that direction first / hide opposite
+let dirName1 = '';
+let dirName2 = '';
+
+function getDirName(dir) {
+  if (dir === 1) return dirName1 || '1';
+  if (dir === 2) return dirName2 || '2';
+  return String(dir);
+}
 
 // ── DOM refs ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -447,6 +455,15 @@ function removeMarker(poiId) {
   }
 }
 
+// ── Settings ─────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const s = await api('GET', '/settings');
+    dirName1 = s.dirName1 || '';
+    dirName2 = s.dirName2 || '';
+  } catch (e) { /* non-critical — direction numbers shown as-is */ }
+}
+
 // ── Load all POIs ────────────────────────────────────────────────────────────
 async function loadPois() {
   const data = await api('GET', '/pois');
@@ -575,6 +592,13 @@ function updateLightboxImage() {
   if (!lightboxEditPoiId) {
     $('lightbox-caption').textContent = ph?.caption || '';
     updateLightboxMarker(ph?.marker_x ?? null, ph?.marker_y ?? null, ph?.marker_rotation ?? 0);
+    const dirLabel = $('lightbox-direction-label');
+    if (ph?.direction) {
+      dirLabel.textContent = `Direction: ${getDirName(ph.direction)}`;
+      dirLabel.classList.remove('hidden');
+    } else {
+      dirLabel.classList.add('hidden');
+    }
   }
 }
 
@@ -661,6 +685,7 @@ function closeLightbox() {
   $('lightbox-marker-overlay').classList.remove('edit-active');
   $('lightbox-marker-overlay').innerHTML = '';
   $('lightbox-caption').textContent = '';
+  $('lightbox-direction-label').classList.add('hidden');
   // Refresh direction badges in the edit list
   if (wasEditing && pois[wasEditing]) renderEditPhotosList(pois[wasEditing]);
 }
@@ -1548,6 +1573,9 @@ function selectNode(nodeId) {
   btnDeleteRoute.disabled = false;
   routeColorInput.value = routes[nodeRouteId[nodeId]]?.color || '#ff69b4';
   routeColorInput.disabled = false;
+  $('dir1-name-input').value = dirName1;
+  $('dir2-name-input').value = dirName2;
+  $('dir-name-fields').classList.remove('hidden');
 }
 
 function deselectNode() {
@@ -1565,6 +1593,7 @@ function deselectNode() {
   btnSplitRoute.disabled = true;
   btnDeleteRoute.disabled = true;
   routeColorInput.disabled = true;
+  $('dir-name-fields').classList.add('hidden');
 }
 
 function updateUndoBtn() {
@@ -1679,6 +1708,15 @@ async function addNodeAtPoi(poiId) {
 
 $('btn-enter-route-edit').addEventListener('click', () => {
   if (routeEditMode) exitRouteEditMode(); else enterRouteEditMode();
+});
+
+$('dir1-name-input').addEventListener('change', async () => {
+  dirName1 = $('dir1-name-input').value.trim();
+  try { await api('PUT', '/settings', { key: 'dirName1', value: dirName1 }); } catch (e) { console.error('Failed to save dirName1', e); }
+});
+$('dir2-name-input').addEventListener('change', async () => {
+  dirName2 = $('dir2-name-input').value.trim();
+  try { await api('PUT', '/settings', { key: 'dirName2', value: dirName2 }); } catch (e) { console.error('Failed to save dirName2', e); }
 });
 
 
@@ -1837,7 +1875,7 @@ $('dir-pref').addEventListener('click', (e) => {
 initLayerSwitcher();
 initDirPref();
 (async () => {
-  await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
+  await Promise.all([checkAuth(), loadPois(), loadRoutes(), loadSettings()]);
   const overlay = document.getElementById('loading-overlay');
   overlay.classList.add('hidden');
   overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });

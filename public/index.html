@@ -105,6 +105,7 @@
   <div id="lightbox-img-wrapper">
     <img id="lightbox-img" src="" alt=""/>
     <div id="lightbox-marker-overlay"></div>
+    <div id="lightbox-direction-label" class="hidden"></div>
   </div>
   <button id="lightbox-next" class="lightbox-nav lightbox-next">&#8250;</button>
   <!-- Caption shown in view mode -->
@@ -216,6 +217,12 @@
   <button id="btn-delete-route" class="btn-sm btn-danger-sm" disabled>Delete Route</button>
   <button id="btn-delete-node" class="btn-sm btn-danger-sm" disabled>Delete Node</button>
   <button id="btn-undo-node" class="btn-sm" disabled>Undo</button>
+  <div id="dir-name-fields" class="hidden">
+    <span class="dir-name-label">Dir&#x202F;1:</span>
+    <input type="text" id="dir1-name-input" maxlength="20" class="dir-name-input" placeholder="Direction 1"/>
+    <span class="dir-name-label">Dir&#x202F;2:</span>
+    <input type="text" id="dir2-name-input" maxlength="20" class="dir-name-input" placeholder="Direction 2"/>
+  </div>
 </div>
 
 <script src="/vendor/exifr/lite.umd.js"></script>

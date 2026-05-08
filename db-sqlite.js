@@ -14,6 +14,11 @@ try { db.exec('ALTER TABLE photos ADD COLUMN marker_y REAL'); } catch (_) {}
 try { db.exec('ALTER TABLE photos ADD COLUMN marker_rotation INTEGER'); } catch (_) {}
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
@@ -151,6 +156,23 @@ function reorderPhotos(poiId, orderedIds) {
     orderedIds.forEach((id, idx) => stmt.run(idx, id, poiId));
   });
   tx();
+}
+
+// ── Settings ────────────────────────────────────────────────────────────────
+
+function getAllSettings() {
+  const rows = db.prepare('SELECT key, value FROM settings').all();
+  const out = {};
+  for (const r of rows) out[r.key] = r.value;
+  return out;
+}
+
+function setSetting(key, value) {
+  if (value == null || value === '') {
+    db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+  } else {
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
+  }
 }
 
 // ── Routes ──────────────────────────────────────────────────────────────────
@@ -327,6 +349,8 @@ module.exports = {
   createPoi,
   updatePoi,
   deletePoi,
+  getAllSettings,
+  setSetting,
   addPhoto,
   deletePhoto,
   updatePhoto,
