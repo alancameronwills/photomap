@@ -6,11 +6,10 @@ const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
 });
 
-const POIS_TABLE     = process.env.POIS_TABLE     || 'PhotomapPois';
-const PHOTOS_TABLE   = process.env.PHOTOS_TABLE   || 'PhotomapPhotos';
-const ROUTES_TABLE   = process.env.ROUTES_TABLE   || 'PhotomapRoutes';
-const NODES_TABLE    = process.env.NODES_TABLE    || 'PhotomapRouteNodes';
-const SETTINGS_TABLE = process.env.SETTINGS_TABLE || 'PhotomapSettings';
+const POIS_TABLE   = process.env.POIS_TABLE   || 'PhotomapPois';
+const PHOTOS_TABLE = process.env.PHOTOS_TABLE || 'PhotomapPhotos';
+const ROUTES_TABLE = process.env.ROUTES_TABLE || 'PhotomapRoutes';
+const NODES_TABLE  = process.env.NODES_TABLE  || 'PhotomapRouteNodes';
 
 function now() {
   return new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -190,23 +189,6 @@ async function reorderPhotos(poiId, orderedIds) {
   }
 }
 
-// ── Settings ────────────────────────────────────────────────────────────────
-
-async function getAllSettings() {
-  const { Items = [] } = await docClient.send(new ScanCommand({ TableName: SETTINGS_TABLE }));
-  const out = {};
-  for (const item of Items) out[item.id] = item.value;
-  return out;
-}
-
-async function setSetting(key, value) {
-  if (value == null || value === '') {
-    await docClient.send(new DeleteCommand({ TableName: SETTINGS_TABLE, Key: { id: key } }));
-  } else {
-    await docClient.send(new PutCommand({ TableName: SETTINGS_TABLE, Item: { id: key, value: String(value) } }));
-  }
-}
-
 // ── Routes ──────────────────────────────────────────────────────────────────
 
 async function getAllRoutes() {
@@ -248,10 +230,12 @@ async function createRoute(name, color) {
   return { ...item, nodes: [] };
 }
 
-async function updateRoute(id, { name, color }) {
+async function updateRoute(id, { name, color, dir1Name, dir2Name }) {
   const exprs = [], names = {}, vals = {};
-  if (name  !== undefined) { exprs.push('#n = :n'); names['#n'] = 'name';  vals[':n'] = name  || null; }
-  if (color !== undefined) { exprs.push('color = :c');                     vals[':c'] = color || '#ff69b4'; }
+  if (name     !== undefined) { exprs.push('#n = :n');   names['#n'] = 'name';     vals[':n'] = name     || null; }
+  if (color    !== undefined) { exprs.push('color = :c');                           vals[':c'] = color    || '#ff69b4'; }
+  if (dir1Name !== undefined) { exprs.push('dir1_name = :d1');                      vals[':d1'] = dir1Name || null; }
+  if (dir2Name !== undefined) { exprs.push('dir2_name = :d2');                      vals[':d2'] = dir2Name || null; }
   if (!exprs.length) return getRouteById(id);
   await docClient.send(new UpdateCommand({
     TableName: ROUTES_TABLE,
@@ -506,8 +490,6 @@ module.exports = {
   splitRoute,
   insertRouteNode,
   findNearestPoi,
-  getAllSettings,
-  setSetting,
   getAllPois,
   getPoiById,
   createPoi,

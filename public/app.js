@@ -200,13 +200,37 @@ let lightboxIndex = 0;
 let lightboxEditPoiId = null;   // non-null when lightbox opened from edit dialog
 let currentMarkerPos = null;    // {x, y} fractions 0-1, or null — while edit lightbox open
 let directionPref = 0;          // 0 = all, 1 or 2 = show that direction first / hide opposite
-let dirName1 = '';
-let dirName2 = '';
+let currentRoute = null;        // Route whose direction names apply to the current view
+let previousPoiId = null;       // Most recently opened POI id (for route determination)
 
 function getDirName(dir) {
-  if (dir === 1) return dirName1 || '1';
-  if (dir === 2) return dirName2 || '2';
+  if (dir === 1) return currentRoute?.dir1_name || '1';
+  if (dir === 2) return currentRoute?.dir2_name || '2';
   return String(dir);
+}
+
+// Returns all routes that have at least one node linked to poiId.
+function getRoutesForPoi(poiId) {
+  return Object.values(routes).filter(r => r.nodes.some(n => n.poi_id === poiId));
+}
+
+// Sets currentRoute according to the model rules, then records previousPoiId.
+function updateCurrentRouteForPoi(poi) {
+  const linked = getRoutesForPoi(poi.id);
+  if (currentRoute && linked.some(r => r.id === currentRoute.id)) {
+    // Current route already links this POI — no change.
+  } else if (linked.length === 0) {
+    currentRoute = null;
+  } else {
+    // POI has routes but none matches currentRoute.
+    let chosen = null;
+    if (previousPoiId) {
+      const prevIds = new Set(getRoutesForPoi(previousPoiId).map(r => r.id));
+      chosen = linked.find(r => prevIds.has(r.id)) || null;
+    }
+    currentRoute = chosen || linked[0];
+  }
+  previousPoiId = poi.id;
 }
 
 // ── DOM refs ────────────────────────────────────────────────────────────────
@@ -455,15 +479,6 @@ function removeMarker(poiId) {
   }
 }
 
-// ── Settings ─────────────────────────────────────────────────────────────────
-async function loadSettings() {
-  try {
-    const s = await api('GET', '/settings');
-    dirName1 = s.dirName1 || '';
-    dirName2 = s.dirName2 || '';
-  } catch (e) { /* non-critical — direction numbers shown as-is */ }
-}
-
 // ── Load all POIs ────────────────────────────────────────────────────────────
 async function loadPois() {
   const data = await api('GET', '/pois');
@@ -526,6 +541,7 @@ function openFullModal(poiId) {
   const poi = pois[poiId] || activePoi;
   if (!poi) return;
   activePoi = poi;
+  updateCurrentRouteForPoi(poi);
 
   fullPhotos.innerHTML = '';
   if (poi.photos && poi.photos.length > 0) {
@@ -550,6 +566,7 @@ function closeFullModal() {
 
 // ── Lightbox ─────────────────────────────────────────────────────────────────
 function openLightbox(poi, startIdx) {
+  updateCurrentRouteForPoi(poi);
   lightboxPhotos = sortedPhotos(poi);
   lightboxEditPoiId = null;
   // Map original index → sorted index so the clicked photo opens first
@@ -708,6 +725,7 @@ function openEditDialog(poiId) {
   editingPoiId = poiId;
   pendingEditFiles = [];
   pendingPhotoEdits = {};
+  updateCurrentRouteForPoi(poi);
 
   editTitleInput.value = poi.title || '';
   editNoteInput.value = poi.note || '';
@@ -1571,10 +1589,11 @@ function selectNode(nodeId) {
   btnDeleteNode.disabled = false;
   btnSplitRoute.disabled = false;
   btnDeleteRoute.disabled = false;
-  routeColorInput.value = routes[nodeRouteId[nodeId]]?.color || '#ff69b4';
+  currentRoute = routes[nodeRouteId[nodeId]] || null;
+  routeColorInput.value = currentRoute?.color || '#ff69b4';
   routeColorInput.disabled = false;
-  $('dir1-name-input').value = dirName1;
-  $('dir2-name-input').value = dirName2;
+  $('dir1-name-input').value = currentRoute?.dir1_name || '';
+  $('dir2-name-input').value = currentRoute?.dir2_name || '';
   $('dir-name-fields').classList.remove('hidden');
 }
 
@@ -1711,12 +1730,20 @@ $('btn-enter-route-edit').addEventListener('click', () => {
 });
 
 $('dir1-name-input').addEventListener('change', async () => {
-  dirName1 = $('dir1-name-input').value.trim();
-  try { await api('PUT', '/settings', { key: 'dirName1', value: dirName1 }); } catch (e) { console.error('Failed to save dirName1', e); }
+  if (!currentRoute) return;
+  const val = $('dir1-name-input').value.trim();
+  try {
+    await api('PUT', `/routes/${currentRoute.id}`, { dir1Name: val });
+    currentRoute.dir1_name = val;
+  } catch (e) { console.error('Failed to save dir1Name', e); }
 });
 $('dir2-name-input').addEventListener('change', async () => {
-  dirName2 = $('dir2-name-input').value.trim();
-  try { await api('PUT', '/settings', { key: 'dirName2', value: dirName2 }); } catch (e) { console.error('Failed to save dirName2', e); }
+  if (!currentRoute) return;
+  const val = $('dir2-name-input').value.trim();
+  try {
+    await api('PUT', `/routes/${currentRoute.id}`, { dir2Name: val });
+    currentRoute.dir2_name = val;
+  } catch (e) { console.error('Failed to save dir2Name', e); }
 });
 
 
@@ -1875,7 +1902,7 @@ $('dir-pref').addEventListener('click', (e) => {
 initLayerSwitcher();
 initDirPref();
 (async () => {
-  await Promise.all([checkAuth(), loadPois(), loadRoutes(), loadSettings()]);
+  await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
   const overlay = document.getElementById('loading-overlay');
   overlay.classList.add('hidden');
   overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });

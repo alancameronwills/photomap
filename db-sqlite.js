@@ -12,13 +12,10 @@ try { db.exec('ALTER TABLE photos ADD COLUMN direction INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE photos ADD COLUMN marker_x REAL'); } catch (_) {}
 try { db.exec('ALTER TABLE photos ADD COLUMN marker_y REAL'); } catch (_) {}
 try { db.exec('ALTER TABLE photos ADD COLUMN marker_rotation INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE routes ADD COLUMN dir1_name TEXT'); } catch (_) {}
+try { db.exec('ALTER TABLE routes ADD COLUMN dir2_name TEXT'); } catch (_) {}
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );
-
   CREATE TABLE IF NOT EXISTS routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
@@ -158,23 +155,6 @@ function reorderPhotos(poiId, orderedIds) {
   tx();
 }
 
-// ── Settings ────────────────────────────────────────────────────────────────
-
-function getAllSettings() {
-  const rows = db.prepare('SELECT key, value FROM settings').all();
-  const out = {};
-  for (const r of rows) out[r.key] = r.value;
-  return out;
-}
-
-function setSetting(key, value) {
-  if (value == null || value === '') {
-    db.prepare('DELETE FROM settings WHERE key = ?').run(key);
-  } else {
-    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
-  }
-}
-
 // ── Routes ──────────────────────────────────────────────────────────────────
 
 function getAllRoutes() {
@@ -200,10 +180,12 @@ function createRoute(name, color) {
   return getRouteById(r.lastInsertRowid);
 }
 
-function updateRoute(id, { name, color }) {
+function updateRoute(id, { name, color, dir1Name, dir2Name }) {
   const fields = [], vals = [];
-  if (name !== undefined) { fields.push('name = ?'); vals.push(name || null); }
-  if (color !== undefined) { fields.push('color = ?'); vals.push(color || '#ff69b4'); }
+  if (name     !== undefined) { fields.push('name = ?');      vals.push(name || null); }
+  if (color    !== undefined) { fields.push('color = ?');     vals.push(color || '#ff69b4'); }
+  if (dir1Name !== undefined) { fields.push('dir1_name = ?'); vals.push(dir1Name || null); }
+  if (dir2Name !== undefined) { fields.push('dir2_name = ?'); vals.push(dir2Name || null); }
   if (!fields.length) return getRouteById(id);
   vals.push(id);
   db.prepare(`UPDATE routes SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
@@ -349,8 +331,6 @@ module.exports = {
   createPoi,
   updatePoi,
   deletePoi,
-  getAllSettings,
-  setSetting,
   addPhoto,
   deletePhoto,
   updatePhoto,

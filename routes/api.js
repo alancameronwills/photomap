@@ -104,19 +104,6 @@ async function extractGPS(buffer) {
 
 function parseId(id) { return IS_AWS ? id : Number(id); }
 
-// ── Settings ──────────────────────────────────────────────────────────────────
-
-router.get('/settings', wrap(async (req, res) => {
-  res.json(await Promise.resolve(db.getAllSettings()));
-}));
-
-router.put('/settings', requireAuth, wrap(async (req, res) => {
-  const { key, value } = req.body;
-  if (!key) return res.status(400).json({ error: 'key required' });
-  await Promise.resolve(db.setSetting(key, value ?? ''));
-  res.json({ ok: true });
-}));
-
 // ── POI routes ────────────────────────────────────────────────────────────────
 
 router.get('/pois', wrap(async (req, res) => {
