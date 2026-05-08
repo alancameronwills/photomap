@@ -6,6 +6,13 @@ const db = new Database(path.join(__dirname, 'photomap.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+// Migrate: add new columns to photos (silently ignored if columns already exist)
+try { db.exec('ALTER TABLE photos ADD COLUMN caption TEXT'); } catch (_) {}
+try { db.exec('ALTER TABLE photos ADD COLUMN direction INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE photos ADD COLUMN marker_x REAL'); } catch (_) {}
+try { db.exec('ALTER TABLE photos ADD COLUMN marker_y REAL'); } catch (_) {}
+try { db.exec('ALTER TABLE photos ADD COLUMN marker_rotation INTEGER'); } catch (_) {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,6 +130,19 @@ function deletePhoto(id) {
   const photo = db.prepare('SELECT * FROM photos WHERE id = ?').get(id);
   db.prepare('DELETE FROM photos WHERE id = ?').run(id);
   return photo;
+}
+
+function updatePhoto(id, { caption, direction, markerX, markerY, markerRotation }) {
+  const fields = [], vals = [];
+  if (caption        !== undefined) { fields.push('caption = ?');          vals.push(caption || null); }
+  if (direction      !== undefined) { fields.push('direction = ?');         vals.push(direction || null); }
+  if (markerX        !== undefined) { fields.push('marker_x = ?');          vals.push(markerX ?? null); }
+  if (markerY        !== undefined) { fields.push('marker_y = ?');          vals.push(markerY ?? null); }
+  if (markerRotation !== undefined) { fields.push('marker_rotation = ?');   vals.push(markerRotation ?? null); }
+  if (!fields.length) return db.prepare('SELECT * FROM photos WHERE id = ?').get(id);
+  vals.push(id);
+  db.prepare(`UPDATE photos SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  return db.prepare('SELECT * FROM photos WHERE id = ?').get(id);
 }
 
 function reorderPhotos(poiId, orderedIds) {
@@ -309,6 +329,7 @@ module.exports = {
   deletePoi,
   addPhoto,
   deletePhoto,
+  updatePhoto,
   reorderPhotos,
   getAllRoutes,
   getRouteById,

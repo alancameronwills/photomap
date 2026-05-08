@@ -129,6 +129,49 @@ async function deletePhoto(id) {
   return photo;
 }
 
+async function updatePhoto(id, { caption, direction, markerX, markerY, markerRotation }) {
+  const exprs = [], names = {}, vals = {};
+  const removes = [];
+  if (caption !== undefined) {
+    names['#cap'] = 'caption';
+    if (caption) { exprs.push('#cap = :cap'); vals[':cap'] = caption; }
+    else removes.push('#cap');
+  }
+  if (direction !== undefined) {
+    if (direction) { exprs.push('direction = :dir'); vals[':dir'] = direction; }
+    else removes.push('direction');
+  }
+  if (markerX !== undefined) {
+    if (markerX != null) { exprs.push('marker_x = :mx'); vals[':mx'] = markerX; }
+    else removes.push('marker_x');
+  }
+  if (markerY !== undefined) {
+    if (markerY != null) { exprs.push('marker_y = :my'); vals[':my'] = markerY; }
+    else removes.push('marker_y');
+  }
+  if (markerRotation !== undefined) {
+    if (markerRotation != null) { exprs.push('marker_rotation = :mr'); vals[':mr'] = markerRotation; }
+    else removes.push('marker_rotation');
+  }
+  if (!exprs.length && !removes.length) {
+    const { Item } = await docClient.send(new GetCommand({ TableName: PHOTOS_TABLE, Key: { id } }));
+    return Item || null;
+  }
+  const updateExpr = [
+    exprs.length  ? `SET ${exprs.join(', ')}`    : '',
+    removes.length ? `REMOVE ${removes.join(', ')}` : '',
+  ].filter(Boolean).join(' ');
+  await docClient.send(new UpdateCommand({
+    TableName: PHOTOS_TABLE,
+    Key: { id },
+    UpdateExpression: updateExpr,
+    ...(Object.keys(names).length ? { ExpressionAttributeNames: names } : {}),
+    ...(Object.keys(vals).length  ? { ExpressionAttributeValues: vals }  : {}),
+  }));
+  const { Item } = await docClient.send(new GetCommand({ TableName: PHOTOS_TABLE, Key: { id } }));
+  return Item || null;
+}
+
 async function reorderPhotos(poiId, orderedIds) {
   for (let i = 0; i < orderedIds.length; i += 25) {
     const chunk = orderedIds.slice(i, i + 25);
@@ -452,6 +495,7 @@ module.exports = {
   deletePoi,
   addPhoto,
   deletePhoto,
+  updatePhoto,
   reorderPhotos,
   getAllRoutes,
   getRouteById,

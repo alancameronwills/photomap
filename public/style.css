@@ -35,7 +35,35 @@ body, html {
   letter-spacing: 0.04em;
 }
 
+#toolbar-left  { display: flex; align-items: center; gap: 12px; }
 #toolbar-right { display: flex; gap: 8px; align-items: center; }
+
+/* ── Direction preference (toolbar, view mode) ── */
+#dir-pref {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 6px;
+  padding: 3px;
+}
+
+.dir-btn,
+.marker-rot-btn {
+  padding: 3px 9px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: #a8a8c0;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  font-family: inherit;
+}
+.dir-btn:hover,
+.marker-rot-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
+.dir-btn.active,
+.marker-rot-btn.active { background: #2563eb; color: #fff; }
 
 .toolbar-btn {
   padding: 6px 14px;
@@ -422,6 +450,23 @@ body, html {
   height: 100%;
   object-fit: cover;
 }
+.edit-photo-item img { cursor: pointer; }
+.edit-photo-item img:hover { opacity: 0.8; }
+
+.photo-dir-badge {
+  position: absolute;
+  bottom: 3px;
+  left: 3px;
+  background: rgba(37,99,235,0.85);
+  color: #fff;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
 .edit-photo-item .delete-photo-btn {
   position: absolute;
   top: 3px;
@@ -495,11 +540,31 @@ body, html {
   align-items: center;
   justify-content: center;
 }
+#lightbox-img-wrapper {
+  position: relative;
+  line-height: 0;   /* collapse inline whitespace */
+}
 #lightbox img {
+  display: block;
   max-width: 95vw;
-  max-height: 90vh;
+  max-height: 82vh; /* leave room for caption / edit panel */
   border-radius: 4px;
-  object-fit: contain;
+}
+#lightbox-marker-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;   /* non-interactive in view mode */
+  overflow: visible;
+}
+#lightbox-marker-overlay.edit-active {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+.photo-marker-pin {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
 }
 .lightbox-close {
   position: fixed;
@@ -525,6 +590,67 @@ body, html {
 .lightbox-nav:hover { background: rgba(255,255,255,0.2); }
 .lightbox-prev { left: 8px; }
 .lightbox-next { right: 8px; }
+
+/* ── Lightbox caption & edit panel ── */
+#lightbox-caption {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #e8e8f0;
+  font-size: 0.9rem;
+  text-align: center;
+  max-width: 70vw;
+  background: rgba(0,0,0,0.55);
+  padding: 6px 16px;
+  border-radius: 6px;
+  pointer-events: none;
+  white-space: pre-wrap;
+}
+#lightbox-caption:empty { display: none; }
+
+#lightbox-edit-panel {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,20,40,0.95);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 10px;
+  padding: 14px 16px;
+  width: min(480px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 1;
+}
+#lightbox-edit-panel.hidden { display: none; }
+
+#lightbox-caption-input {
+  width: 100%;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  color: #e8e8f0;
+  font-size: 0.9rem;
+  font-family: inherit;
+  padding: 8px 10px;
+  resize: none;
+}
+#lightbox-caption-input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.lightbox-dir-row,
+.lightbox-marker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #a8a8c0;
+  font-size: 0.85rem;
+}
+.lightbox-marker-hint { flex: 1; font-style: italic; font-size: 0.8rem; }
 
 /* ── Toast / Upload Progress ── */
 .toast {

@@ -155,6 +155,19 @@ router.post('/pois/:id/photos', requireAuth, upload.array('photos', 50), wrap(as
   res.json(await withPhotoUrls(await Promise.resolve(db.getPoiById(parseId(req.params.id)))));
 }));
 
+router.put('/photos/:id', requireAuth, wrap(async (req, res) => {
+  const { caption, direction, markerX, markerY, markerRotation } = req.body;
+  const photo = await Promise.resolve(db.updatePhoto(parseId(req.params.id), {
+    caption:        caption        !== undefined ? (caption || null)                                   : undefined,
+    direction:      direction      !== undefined ? (direction ? Number(direction) : null)              : undefined,
+    markerX:        markerX        !== undefined ? (markerX        != null ? Number(markerX)        : null) : undefined,
+    markerY:        markerY        !== undefined ? (markerY        != null ? Number(markerY)        : null) : undefined,
+    markerRotation: markerRotation !== undefined ? (markerRotation != null ? Number(markerRotation) : null) : undefined,
+  }));
+  if (!photo) return res.status(404).json({ error: 'Not found' });
+  res.json(photo);
+}));
+
 router.delete('/photos/:id', requireAuth, wrap(async (req, res) => {
   const photo = await Promise.resolve(db.deletePhoto(parseId(req.params.id)));
   if (!photo) return res.status(404).json({ error: 'Not found' });

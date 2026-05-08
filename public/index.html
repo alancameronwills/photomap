@@ -24,6 +24,11 @@
 <div id="toolbar">
   <div id="toolbar-left">
     <span id="app-title">Map y Ffoto</span>
+    <div id="dir-pref" title="Direction preference — filter photos by direction">
+      <button class="dir-btn active" data-dir="">All</button>
+      <button class="dir-btn" data-dir="1">1</button>
+      <button class="dir-btn" data-dir="2">2</button>
+    </div>
   </div>
   <div id="toolbar-right">
     <button id="btn-bulk-upload" class="toolbar-btn hidden">Upload Photos</button>
@@ -97,8 +102,30 @@
 <div id="lightbox" class="overlay hidden">
   <button id="lightbox-close" class="close-btn lightbox-close">&#x2715;</button>
   <button id="lightbox-prev" class="lightbox-nav lightbox-prev">&#8249;</button>
-  <img id="lightbox-img" src="" alt=""/>
+  <div id="lightbox-img-wrapper">
+    <img id="lightbox-img" src="" alt=""/>
+    <div id="lightbox-marker-overlay"></div>
+  </div>
   <button id="lightbox-next" class="lightbox-nav lightbox-next">&#8250;</button>
+  <!-- Caption shown in view mode -->
+  <div id="lightbox-caption"></div>
+  <!-- Edit panel shown in edit mode (click photo from edit dialog) -->
+  <div id="lightbox-edit-panel" class="hidden">
+    <textarea id="lightbox-caption-input" rows="2" placeholder="Caption…"></textarea>
+    <div class="lightbox-dir-row">
+      <span>Direction:</span>
+      <button class="dir-btn" data-dir="">Unset</button>
+      <button class="dir-btn" data-dir="1">1</button>
+      <button class="dir-btn" data-dir="2">2</button>
+    </div>
+    <div class="lightbox-marker-row">
+      <span class="lightbox-marker-hint">Click photo to place marker</span>
+      <button class="marker-rot-btn active" data-rot="0" title="Point down">&#x2193;</button>
+      <button class="marker-rot-btn" data-rot="1" title="Point left">&#x2190;</button>
+      <button class="marker-rot-btn" data-rot="2" title="Point right">&#x2192;</button>
+      <button id="lightbox-remove-marker" class="btn-sm">Remove</button>
+    </div>
+  </div>
 </div>
 
 <!-- Edit POI modal -->

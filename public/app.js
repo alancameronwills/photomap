@@ -195,8 +195,11 @@ let activePoi = null;    // currently previewed/opened POI
 let newPoiLatLng = null; // temp latlng for new POI from map click
 let pendingNewFiles = []; // FileList accumulated for new POI dialog
 let pendingNodeForPoi = null; // route node waiting to be linked to a new POI
-let lightboxImages = [];
+let lightboxPhotos = [];        // full photo objects (may be sorted by direction pref)
 let lightboxIndex = 0;
+let lightboxEditPoiId = null;   // non-null when lightbox opened from edit dialog
+let currentMarkerPos = null;    // {x, y} fractions 0-1, or null — while edit lightbox open
+let directionPref = 0;          // 0 = all, 1 or 2 = show that direction first / hide opposite
 
 // ── DOM refs ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -336,14 +339,28 @@ function setEditMode(on) {
   }
 
   btnEditPoi.classList.toggle('hidden', !on);
+  $('dir-pref').classList.toggle('hidden', on);
+
+  if (on) {
+    // In edit mode show all POIs, including any hidden by direction filter
+    for (const poi of Object.values(pois)) {
+      if (!markers[poi.id]) addOrUpdateMarker(poi);
+    }
+  } else {
+    // Re-apply direction filter now that edit mode is off
+    for (const poi of Object.values(pois)) {
+      if (shouldHidePoi(poi)) removeMarker(poi.id);
+    }
+  }
 }
 
 // ── Marker creation ──────────────────────────────────────────────────────────
 const LABEL_MIN_ZOOM = 13;
 
 function createMarkerIcon(poi) {
-  if (poi.photos && poi.photos.length > 0) {
-    const thumb = poi.photos[0].thumb_url || `/uploads/thumbs/${poi.photos[0].thumb_filename}`;
+  const photos = sortedPhotos(poi);
+  if (photos.length > 0) {
+    const thumb = photos[0].thumb_url || `/uploads/thumbs/${photos[0].thumb_filename}`;
     const editCls = editMode ? ' edit-mode' : '';
     return L.divIcon({
       html: `<div class="photo-marker${editCls}"><img src="${thumb}" alt="" draggable="false"/></div>`,
@@ -362,6 +379,10 @@ function createMarkerIcon(poi) {
 }
 
 function addOrUpdateMarker(poi) {
+  if (shouldHidePoi(poi)) {
+    removeMarker(poi.id);
+    return;
+  }
   if (markers[poi.id]) {
     if (editMode) map.removeLayer(markers[poi.id]);
     else clusterGroup.removeLayer(markers[poi.id]);
@@ -512,34 +533,156 @@ function closeFullModal() {
 
 // ── Lightbox ─────────────────────────────────────────────────────────────────
 function openLightbox(poi, startIdx) {
-  lightboxImages = poi.photos.map(ph => ph.url || `/uploads/originals/${ph.filename}`);
-  lightboxIndex = startIdx;
-  lightboxImg.src = lightboxImages[lightboxIndex];
-  const multi = lightboxImages.length > 1;
+  lightboxPhotos = sortedPhotos(poi);
+  lightboxEditPoiId = null;
+  // Map original index → sorted index so the clicked photo opens first
+  const originalPhoto = poi.photos[startIdx];
+  if (originalPhoto) {
+    const si = lightboxPhotos.findIndex(p => p.id === originalPhoto.id);
+    lightboxIndex = si >= 0 ? si : 0;
+  } else {
+    lightboxIndex = 0;
+  }
+  $('lightbox-edit-panel').classList.add('hidden');
+  $('lightbox-marker-overlay').classList.remove('edit-active');
+  updateLightboxImage();
+  const multi = lightboxPhotos.length > 1;
   $('lightbox-prev').classList.toggle('hidden', !multi);
   $('lightbox-next').classList.toggle('hidden', !multi);
   lightbox.classList.remove('hidden');
 }
 
+function openEditLightbox(poiId, photoIdx) {
+  const poi = pois[poiId];
+  if (!poi || !poi.photos || !poi.photos.length) return;
+  lightboxPhotos = poi.photos;    // original order in edit mode
+  lightboxIndex = photoIdx;
+  lightboxEditPoiId = poiId;
+  $('lightbox-caption').textContent = '';
+  $('lightbox-edit-panel').classList.remove('hidden');
+  $('lightbox-marker-overlay').classList.add('edit-active');
+  updateLightboxImage();
+  updateEditLightboxPanel();
+  const multi = lightboxPhotos.length > 1;
+  $('lightbox-prev').classList.toggle('hidden', !multi);
+  $('lightbox-next').classList.toggle('hidden', !multi);
+  lightbox.classList.remove('hidden');
+}
+
+function updateLightboxImage() {
+  const ph = lightboxPhotos[lightboxIndex];
+  lightboxImg.src = ph ? (ph.url || `/uploads/originals/${ph.filename}`) : '';
+  if (!lightboxEditPoiId) {
+    $('lightbox-caption').textContent = ph?.caption || '';
+    updateLightboxMarker(ph?.marker_x ?? null, ph?.marker_y ?? null, ph?.marker_rotation ?? 0);
+  }
+}
+
+// Marker configs: points + CSS transform so the arrow tip lands at (left%, top%).
+// 0=down (tip bottom-centre), 1=left (tip left-centre), 2=right (tip right-centre).
+const MARKER_CONFIGS = {
+  0: { points: '10,1 20,1 20,15 29,15 15,29 1,15 10,15',  transform: 'translate(-50%,-100%)' },
+  1: { points: '29,10 29,20 15,20 15,29 1,15 15,1 15,10', transform: 'translate(0%,-50%)' },
+  2: { points: '1,10 1,20 15,20 15,29 29,15 15,1 15,10',  transform: 'translate(-100%,-50%)' },
+};
+
+function updateLightboxMarker(x, y, rotation = 0) {
+  const overlay = $('lightbox-marker-overlay');
+  overlay.innerHTML = '';
+  if (x == null || y == null) return;
+  const cfg = MARKER_CONFIGS[rotation ?? 0] || MARKER_CONFIGS[0];
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width',   '30');
+  svg.setAttribute('height',  '30');
+  svg.setAttribute('viewBox', '0 0 30 30');
+  svg.classList.add('photo-marker-pin');
+  svg.style.left      = `${x * 100}%`;
+  svg.style.top       = `${y * 100}%`;
+  svg.style.transform = cfg.transform;
+  const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  poly.setAttribute('points',          cfg.points);
+  poly.setAttribute('fill',            '#ef4444');
+  poly.setAttribute('stroke',          '#000');
+  poly.setAttribute('stroke-width',    '2');
+  poly.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(poly);
+  overlay.appendChild(svg);
+}
+
+function updateEditLightboxPanel() {
+  const ph = lightboxPhotos[lightboxIndex];
+  if (!ph) return;
+  const pending = pendingPhotoEdits[ph.id];
+  $('lightbox-caption-input').value = (pending !== undefined ? pending.caption : ph.caption) || '';
+  const dir = pending !== undefined ? pending.direction : (ph.direction || null);
+  document.querySelectorAll('#lightbox-edit-panel .dir-btn').forEach(btn => {
+    const btnDir = btn.dataset.dir ? Number(btn.dataset.dir) : null;
+    btn.classList.toggle('active', btnDir === dir);
+  });
+  const mx  = pending !== undefined ? pending.markerX        : (ph.marker_x        ?? null);
+  const my  = pending !== undefined ? pending.markerY        : (ph.marker_y        ?? null);
+  const rot = pending !== undefined ? (pending.markerRotation ?? 0) : (ph.marker_rotation ?? 0);
+  currentMarkerPos = (mx != null && my != null) ? { x: mx, y: my, rotation: rot } : null;
+  document.querySelectorAll('#lightbox-edit-panel .marker-rot-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.rot) === rot);
+  });
+  updateLightboxMarker(mx, my, rot);
+}
+
+function stashCurrentLightboxPhotoEdit() {
+  if (!lightboxEditPoiId) return;
+  const ph = lightboxPhotos[lightboxIndex];
+  if (!ph) return;
+  const caption = $('lightbox-caption-input').value.trim();
+  const activeBtn = document.querySelector('#lightbox-edit-panel .dir-btn.active');
+  const dir = activeBtn?.dataset.dir ? Number(activeBtn.dataset.dir) : null;
+  pendingPhotoEdits[ph.id] = {
+    caption:        caption || null,
+    direction:      dir,
+    markerX:        currentMarkerPos ? currentMarkerPos.x        : null,
+    markerY:        currentMarkerPos ? currentMarkerPos.y        : null,
+    markerRotation: currentMarkerPos ? currentMarkerPos.rotation : null,
+  };
+  ph.caption          = caption || null;
+  ph.direction        = dir;
+  ph.marker_x         = currentMarkerPos ? currentMarkerPos.x        : null;
+  ph.marker_y         = currentMarkerPos ? currentMarkerPos.y        : null;
+  ph.marker_rotation  = currentMarkerPos ? currentMarkerPos.rotation : null;
+}
+
 function closeLightbox() {
+  stashCurrentLightboxPhotoEdit();
   lightbox.classList.add('hidden');
   lightboxImg.src = '';
+  const wasEditing = lightboxEditPoiId;
+  lightboxEditPoiId = null;
+  currentMarkerPos = null;
+  $('lightbox-edit-panel').classList.add('hidden');
+  $('lightbox-marker-overlay').classList.remove('edit-active');
+  $('lightbox-marker-overlay').innerHTML = '';
+  $('lightbox-caption').textContent = '';
+  // Refresh direction badges in the edit list
+  if (wasEditing && pois[wasEditing]) renderEditPhotosList(pois[wasEditing]);
 }
 
 function lightboxNav(dir) {
-  lightboxIndex = (lightboxIndex + dir + lightboxImages.length) % lightboxImages.length;
-  lightboxImg.src = lightboxImages[lightboxIndex];
+  stashCurrentLightboxPhotoEdit();
+  lightboxIndex = (lightboxIndex + dir + lightboxPhotos.length) % lightboxPhotos.length;
+  updateLightboxImage();
+  if (lightboxEditPoiId) updateEditLightboxPanel();
 }
 
 // ── Edit dialog ──────────────────────────────────────────────────────────────
 let editingPoiId = null;
 let pendingEditFiles = [];
+let pendingPhotoEdits = {};  // photoId → { caption, direction } — flushed on POI save
 
 function openEditDialog(poiId) {
   const poi = pois[poiId];
   if (!poi) return;
   editingPoiId = poiId;
   pendingEditFiles = [];
+  pendingPhotoEdits = {};
 
   editTitleInput.value = poi.title || '';
   editNoteInput.value = poi.note || '';
@@ -555,13 +698,16 @@ function openEditDialog(poiId) {
 function renderEditPhotosList(poi) {
   editPhotosList.innerHTML = '';
   if (!poi.photos) return;
-  poi.photos.forEach(ph => {
+  poi.photos.forEach((ph, idx) => {
     const item = document.createElement('div');
     item.className = 'edit-photo-item';
+    const dirBadge = ph.direction ? `<span class="photo-dir-badge">${ph.direction}</span>` : '';
     item.innerHTML = `
-      <img src="${ph.thumb_url || `/uploads/thumbs/${ph.thumb_filename}`}" alt=""/>
+      <img src="${ph.thumb_url || `/uploads/thumbs/${ph.thumb_filename}`}" alt="" title="Click to edit caption/direction"/>
+      ${dirBadge}
       <button class="delete-photo-btn" data-photo-id="${ph.id}" title="Delete photo">&#x2715;</button>
     `;
+    item.querySelector('img').addEventListener('click', () => openEditLightbox(poi.id, idx));
     item.querySelector('.delete-photo-btn').addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!confirm('Delete this photo?')) return;
@@ -596,6 +742,14 @@ async function saveEditDialog() {
     pois[editingPoiId] = updated;
     addOrUpdateMarker(updated);
 
+    // Flush any caption/direction edits made via the lightbox
+    const photoEditEntries = Object.entries(pendingPhotoEdits);
+    if (photoEditEntries.length) {
+      await Promise.all(photoEditEntries.map(([photoId, edits]) =>
+        api('PUT', `/photos/${photoId}`, edits)
+      ));
+    }
+
     // Upload any new photos (scaled client-side)
     if (pendingEditFiles.length > 0) {
       const scaled = await Promise.all(pendingEditFiles.map(f => scaleImageFile(f)));
@@ -604,6 +758,11 @@ async function saveEditDialog() {
       const result = await api('POST', `/pois/${editingPoiId}/photos`, fd);
       pois[editingPoiId] = result;
       addOrUpdateMarker(result);
+    } else if (photoEditEntries.length) {
+      // Reload to get updated photo data
+      const refreshed = await api('GET', `/pois/${editingPoiId}`);
+      pois[editingPoiId] = refreshed;
+      addOrUpdateMarker(refreshed);
     }
 
     closeEditDialog();
@@ -649,6 +808,7 @@ function closeEditDialog() {
   editOverlay.classList.add('hidden');
   editingPoiId = null;
   pendingEditFiles = [];
+  pendingPhotoEdits = {};
 }
 
 // ── New POI dialog (from map click in edit mode) ──────────────────────────────
@@ -934,10 +1094,51 @@ $('btn-new-save').addEventListener('click', saveNewPoi);
 // Lightbox
 $('lightbox-close').addEventListener('click', closeLightbox);
 lightbox.addEventListener('click', (e) => {
-  if (e.target === lightbox || e.target === lightboxImg) closeLightbox();
+  if (e.target === lightbox) closeLightbox();
+  // In view mode only, clicking the image also closes; in edit mode keep it open for editing
+  if (e.target === lightboxImg && !lightboxEditPoiId) closeLightbox();
 });
 $('lightbox-prev').addEventListener('click', (e) => { e.stopPropagation(); lightboxNav(-1); });
 $('lightbox-next').addEventListener('click', (e) => { e.stopPropagation(); lightboxNav(1); });
+
+// Lightbox edit panel — direction buttons and marker rotation buttons
+$('lightbox-edit-panel').addEventListener('click', (e) => {
+  const dirBtn = e.target.closest('.dir-btn');
+  if (dirBtn) {
+    document.querySelectorAll('#lightbox-edit-panel .dir-btn').forEach(b => b.classList.remove('active'));
+    dirBtn.classList.add('active');
+    return;
+  }
+  const rotBtn = e.target.closest('.marker-rot-btn');
+  if (rotBtn) {
+    document.querySelectorAll('#lightbox-edit-panel .marker-rot-btn').forEach(b => b.classList.remove('active'));
+    rotBtn.classList.add('active');
+    if (currentMarkerPos) {
+      currentMarkerPos.rotation = Number(rotBtn.dataset.rot);
+      updateLightboxMarker(currentMarkerPos.x, currentMarkerPos.y, currentMarkerPos.rotation);
+    }
+  }
+});
+
+// Marker overlay — click to place/move marker (edit mode only)
+$('lightbox-marker-overlay').addEventListener('click', (e) => {
+  if (!lightboxEditPoiId) return;
+  e.stopPropagation();
+  const overlay = $('lightbox-marker-overlay');
+  const x = Math.max(0, Math.min(1, e.offsetX / overlay.clientWidth));
+  const y = Math.max(0, Math.min(1, e.offsetY / overlay.clientHeight));
+  const rotBtn = document.querySelector('#lightbox-edit-panel .marker-rot-btn.active');
+  const rotation = rotBtn ? Number(rotBtn.dataset.rot) : 0;
+  currentMarkerPos = { x, y, rotation };
+  updateLightboxMarker(x, y, rotation);
+});
+
+// Remove marker button
+$('lightbox-remove-marker').addEventListener('click', (e) => {
+  e.stopPropagation();
+  currentMarkerPos = null;
+  updateLightboxMarker(null, null);
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
@@ -1585,8 +1786,56 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'z' && e.ctrlKey) { e.preventDefault(); undoLastNode(); }
 });
 
+// ── Direction preference ──────────────────────────────────────────────────────
+
+function sortedPhotos(poi) {
+  if (!directionPref || !poi.photos || !poi.photos.length) return poi.photos || [];
+  return [...poi.photos].sort((a, b) => {
+    const aMatch = a.direction === directionPref ? 0 : 1;
+    const bMatch = b.direction === directionPref ? 0 : 1;
+    return aMatch - bMatch;
+  });
+}
+
+function shouldHidePoi(poi) {
+  if (editMode) return false;
+  if (!directionPref) return false;
+  if (!poi.photos || poi.photos.length === 0) return false;
+  // Hide only if every photo has a direction set AND all are the opposite direction
+  return poi.photos.every(ph => ph.direction && ph.direction !== directionPref);
+}
+
+function reapplyDirectionFilter() {
+  for (const poi of Object.values(pois)) {
+    addOrUpdateMarker(poi);  // removes if hidden, adds/updates if visible
+  }
+}
+
+function updateDirPrefButtons() {
+  document.querySelectorAll('#dir-pref .dir-btn').forEach(btn => {
+    const d = btn.dataset.dir ? Number(btn.dataset.dir) : 0;
+    btn.classList.toggle('active', d === directionPref);
+  });
+}
+
+function initDirPref() {
+  const saved = localStorage.getItem('directionPref');
+  directionPref = saved ? Number(saved) : 0;
+  updateDirPrefButtons();
+}
+
+$('dir-pref').addEventListener('click', (e) => {
+  const btn = e.target.closest('.dir-btn');
+  if (!btn) return;
+  directionPref = btn.dataset.dir ? Number(btn.dataset.dir) : 0;
+  localStorage.setItem('directionPref', directionPref);
+  updateDirPrefButtons();
+  reapplyDirectionFilter();
+});
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initLayerSwitcher();
+initDirPref();
 (async () => {
   await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
   const overlay = document.getElementById('loading-overlay');
