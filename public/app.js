@@ -547,6 +547,7 @@ function openEditDialog(poiId) {
   renderEditPhotosList(poi);
 
   $('edit-modal-title').textContent = poi.title ? `Edit: ${poi.title}` : 'Edit Point of Interest';
+  $('btn-os-maps').href = `https://explore.osmaps.com/?lat=${poi.lat}&lon=${poi.lng}&zoom=16&style=TopoAuto&type=2d`;
   editOverlay.classList.remove('hidden');
   closePreview();
 }
