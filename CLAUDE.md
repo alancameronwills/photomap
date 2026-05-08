@@ -60,6 +60,7 @@ AWS-only (set via `template.yaml` / SAM, not `.env`):
 
 Both db modules export the same function signatures:
 - `haversineMeters` / `findNearestPoi` — used by the bulk-upload route to geo-group photos
+- `addPhoto` / `deletePhoto` / `updatePhoto(id, {caption, direction, markerX, markerY, markerRotation})` — photo CRUD; `updatePhoto` persists per-photo annotations
 - `deletePoiLinkedNodes(poiId)` — removes all route nodes linked to a POI, cascades routes that fall below 2 nodes; called before `deletePoi`
 - `deleteRouteNode(id)` — returns `{deletedNodeIds, routeDeleted, routeId}`; cascades the route when ≤1 node remains
 - `insertRouteNode(routeId, afterNodeId, lat, lng, poiId)` — inserts between two nodes using floating-point bisection of `order_index`
@@ -73,6 +74,8 @@ Both db modules export the same function signatures:
 
 `POST /api/upload-photos` is the bulk import path. The client batches uploads in groups of 10 (API Gateway HTTP API has a 10 MB request limit). Groups photos by GPS proximity (10 m threshold). GPS is supplied by the client as a `gpsData` JSON field; server-side `exifr` extraction is the fallback.
 
+`PUT /api/photos/:id` updates a photo's `caption`, `direction` (1/2/null), `markerX`/`markerY` (0–1 fractions), and `markerRotation` (0=down, 1=left, 2=right). Called in bulk when the POI edit dialog is saved.
+
 `POST /routes/:id/split` delegates to `db.splitRoute`. `DELETE /route-nodes/:id` returns the full deletion result so the client can do surgical cleanup.
 
 **`middleware/requireAuth.js`** — guards all write endpoints; reads `req.session.authenticated`.
@@ -83,18 +86,20 @@ Both db modules export the same function signatures:
 
 No build step — plain JS loaded directly by the browser. Scripts served locally (from `node_modules` via `/vendor/` routes) in order: Leaflet → MarkerCluster → exifr lite → `/config.js` → `app.js`.
 
-**`app.js`** (~1530 lines) organised into sections:
+**`app.js`** (~1700 lines) organised into sections:
 
 - **Photo scaling / GPS extraction** — `scaleImageFile(file, maxPx=1000)` scales via canvas; `extractGPSFromFiles(files)` reads EXIF from originals before scaling strips it. Both run in parallel in `uploadPhotosToMap`, which batches the scaled files into groups of 10 and posts each batch to `POST /api/upload-photos` with a `gpsData` JSON field. The server prefers `gpsData[i]` over re-extracting from the scaled file.
 - **Photo URLs** — all photo display uses `ph.url || '/uploads/originals/' + ph.filename` and `ph.thumb_url || '/uploads/thumbs/' + ph.thumb_filename`. On AWS the `url`/`thumb_url` fields are presigned S3 URLs returned by the API; on local they are absent and the fallback paths are used.
 - **Tile layers** — `TILE_LAYERS` keyed by display name. Default is `'Topographic'`. All limited-zoom layers use `maxNativeZoom` (not `maxZoom`) so the map zoom is never capped. `handleZoomForLayer` fires on `zoomend`; `aerialFallback` flag is separate from `activeLayerName` so the intended layer is restored on zoom-out. Fallback threshold is `maxNativeZoom + 1`.
 - **Map state persistence** — zoom and centre are saved to `localStorage` on every `moveend` and restored before the map is constructed. If no saved position exists and POIs are loaded, the map fits to all POI locations.
-- **Marker rendering** — POIs render as circular photo thumbnails (`divIcon`) or blue dots. Markers live in a `L.markerClusterGroup` in view mode and are moved directly onto `map` in edit mode (necessary for drag to work — clustered markers have `_icon = null`).
+- **Marker rendering** — POIs render as circular photo thumbnails (`divIcon`) or blue dots. Markers live in a `L.markerClusterGroup` in view mode and are moved directly onto `map` in edit mode (necessary for drag to work — clustered markers have `_icon = null`). The thumbnail shown is the first photo from `sortedPhotos(poi)`, which puts direction-preferred photos first.
 - **Marker drag fix** — `setIcon()` swaps the DOM element but doesn't reset `dragging._enabled`; always call `disable() → setIcon() → enable()` or `addTo(map) → disable() → enable()`.
 - **POI labels** — rendered via `marker.bindTooltip(title, { permanent: true, direction: 'auto', className: 'poi-label' })`. Hidden at zoom < `LABEL_MIN_ZOOM` (13); a `zoomend` listener shows/hides all tooltips. Labels use `width: max-content; max-width: 160px` so short titles don't wrap prematurely.
 - **POI click routing** (view mode) — `openFullModal` if POI has title or note; `openLightbox(poi, 0)` if photos only; `showPreview` as fallback.
 - **Loading indicator** — `#loading-overlay` covers the map until the startup `Promise.all([checkAuth(), loadPois(), loadRoutes()])` resolves, then fades out and is removed from the DOM.
-- **Edit mode** — `setEditMode(on)` moves markers between cluster and map, toggles toolbar buttons (Upload Photos, Edit Routes) and the edit-indicator banner. Always starts off on page load.
+- **Edit mode** — `setEditMode(on)` moves markers between cluster and map, toggles toolbar buttons (Upload Photos, Edit Routes) and the edit-indicator banner. Always starts off on page load. Entering edit mode reveals all POIs regardless of direction filter; exiting re-applies it.
+- **Direction preference** — toolbar control (All/1/2) stored in `localStorage`. `sortedPhotos(poi)` sorts matching-direction photos first; `shouldHidePoi(poi)` returns true if all photos have the opposite direction; `reapplyDirectionFilter()` re-renders all markers when preference changes.
+- **Photo annotations (lightbox edit mode)** — clicking a thumbnail in the edit dialog calls `openEditLightbox(poiId, idx)`, which adds a crosshair overlay on the photo. Clicking the photo places a directional arrow marker (↓/←/→, controlled by rotation buttons); caption and direction tag are also editable. All changes are buffered in `pendingPhotoEdits` and flushed via `PUT /api/photos/:id` calls when the POI is saved. `stashCurrentLightboxPhotoEdit()` snapshots the current photo's state before navigating or closing.
 
 #### Route editing
 
@@ -122,11 +127,16 @@ State variables: `routeEditMode`, `waitingForRouteStart`, `activeRouteId`, `exte
 
 ```
 pois         (id, lat, lng, title, note, created_at, updated_at)
-  └── photos (id, poi_id, filename, thumb_filename, original_name, order_index, created_at)
+  └── photos (id, poi_id, filename, thumb_filename, original_name, order_index, created_at,
+              caption, direction, marker_x, marker_y, marker_rotation)
 
 routes       (id, name, color, created_at)
   └── route_nodes (id, route_id, order_index REAL, lat, lng, poi_id → pois.id)
 ```
+
+- `photos.direction` — integer 1 or 2 (or null); used for direction-preference filtering/sorting.
+- `photos.marker_x`, `photos.marker_y` — 0–1 fractions of image dimensions; position of the arrow marker tip.
+- `photos.marker_rotation` — integer 0=down, 1=left, 2=right; selects which of three arrow polygon shapes to render.
 
 - `id` fields are auto-increment integers in SQLite; UUID strings in DynamoDB.
 - `route_nodes.order_index` is a float so `insertRouteNode` can bisect without renumbering.

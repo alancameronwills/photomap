@@ -7,9 +7,11 @@ An interactive map for organising geotagged photos and hand-drawn routes. Photos
 - **Photo POIs** — drop photos onto the map; GPS EXIF data places them automatically. Photos without GPS go to the current map centre. Nearby photos (within 10 m) are merged into one POI.
 - **Map layers** — Topographic (default), OpenStreetMap, ESRI Aerial, and (with a MapTiler key) the NLS historic 6-inch OS survey. Zooming past a layer's native resolution switches automatically to Aerial and back.
 - **Route editing** — draw multi-node routes, link nodes to POIs, insert nodes by clicking a route line, split routes, recolour routes per-route.
-- **Edit / view modes** — all edits require a password. View mode is the default on load; the session is remembered so the password is only asked once.
+- **Edit / view modes** — all edits require a password (or Google/Microsoft OAuth). View mode is the default on load; the session is remembered.
 - **Bulk upload** — drag a folder of photos onto the map; GPS is extracted client-side before scaling so EXIF survives compression.
 - **POI labels** — titles appear as map labels at zoom ≥ 13, auto-positioned to avoid map edges.
+- **Photo annotations** — each photo can have a caption, a direction tag (1 or 2), and a positioned arrow marker (↓ ← →) placed by clicking on the photo in the lightbox.
+- **Direction preference** — a toolbar control (All / 1 / 2) sorts preferred-direction photos first within each POI and hides POIs whose photos are all in the opposite direction.
 
 ## Running locally
 
@@ -80,11 +82,13 @@ Clicking a POI marker opens a view depending on its content:
 
 ### Editing
 
-Click **Edit Mode** in the toolbar and enter the password. In edit mode:
+Click **Edit Mode** in the toolbar and enter the password (or sign in via Google/Microsoft). In edit mode:
 
 - **Click the map** to create a new POI (title, notes, photos).
 - **Drag a POI marker** to reposition it.
 - **Click a POI marker** to edit its title, notes, or photos.
+- **Click a photo thumbnail** in the edit dialog to open it in the lightbox and add a caption, set a direction tag (1 or 2), or click anywhere on the photo to place a directional arrow marker (↓ ← →). Changes are buffered and saved when you save the POI.
+- **OS Maps button** in the edit dialog opens the POI location in OS Maps Explore.
 - **Upload Photos** (toolbar) — bulk-import photos; GPS data is used to place and group them automatically.
 
 ### Route editing
