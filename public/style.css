@@ -337,6 +337,44 @@ body, html {
   right: 12px;
 }
 
+/* ── OAuth buttons ── */
+.oauth-divider {
+  text-align: center;
+  color: #8888a0;
+  font-size: 0.8rem;
+  margin: 18px 0 12px;
+  position: relative;
+}
+.oauth-divider::before,
+.oauth-divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: calc(50% - 20px);
+  height: 1px;
+  background: rgba(255,255,255,0.1);
+}
+.oauth-divider::before { left: 0; }
+.oauth-divider::after  { right: 0; }
+
+.btn-oauth {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 16px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.06);
+  color: #e8e8f0;
+  font-size: 0.9rem;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+.btn-oauth:hover { background: rgba(255,255,255,0.14); }
+
 /* ── Drop Zone ── */
 .drop-zone {
   border: 2px dashed rgba(255,255,255,0.15);

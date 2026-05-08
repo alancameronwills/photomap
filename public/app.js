@@ -206,6 +206,29 @@ const btnLogout      = $('btn-logout');
 const loginOverlay   = $('login-overlay');
 const loginPassword  = $('login-password');
 const loginError     = $('login-error');
+
+// Show OAuth sign-in buttons only when the provider is configured server-side
+if (window.APP_CONFIG.googleAuth || window.APP_CONFIG.microsoftAuth) {
+  $('oauth-section').classList.remove('hidden');
+  if (window.APP_CONFIG.googleAuth)    $('btn-google-login').classList.remove('hidden');
+  if (window.APP_CONFIG.microsoftAuth) $('btn-microsoft-login').classList.remove('hidden');
+}
+
+// Handle redirect back from OAuth with an error (e.g. ?login_error=forbidden)
+{
+  const params = new URLSearchParams(window.location.search);
+  const oauthErr = params.get('login_error');
+  if (oauthErr) {
+    const msg = oauthErr === 'forbidden'
+      ? 'Your account is not authorised to access this application.'
+      : 'Sign-in failed. Please try again.';
+    $('oauth-error').textContent = msg;
+    $('oauth-error').classList.remove('hidden');
+    $('oauth-section').classList.remove('hidden');
+    loginOverlay.classList.remove('hidden');
+    history.replaceState({}, '', '/');
+  }
+}
 const previewPanel   = $('preview-panel');
 const previewPhotos  = $('preview-photos');
 const previewTitle   = $('preview-title');
@@ -305,7 +328,7 @@ function setEditMode(on) {
       marker.dragging.disable(); // reset _enabled in case a previous stale enable() set it
       marker.dragging.enable();  // _map and _icon are now live → listeners attach
     } else {
-      marker.dragging.disable();
+      marker.dragging?.disable();
       map.removeLayer(marker);
       marker.setIcon(createMarkerIcon(pois[id]));
       clusterGroup.addLayer(marker);

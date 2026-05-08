@@ -60,7 +60,11 @@ app.use(session({
 
 app.get('/config.js', (req, res) => {
   res.type('application/javascript');
-  res.send(`window.APP_CONFIG = ${JSON.stringify({ maptilerKey: process.env.MAPTILER_KEY || '' })};`);
+  res.send(`window.APP_CONFIG = ${JSON.stringify({
+    maptilerKey:   process.env.MAPTILER_KEY        || '',
+    googleAuth:    !!process.env.GOOGLE_CLIENT_ID,
+    microsoftAuth: !!process.env.MICROSOFT_CLIENT_ID,
+  })};`);
 });
 
 // ── Static files ──────────────────────────────────────────────────────────────

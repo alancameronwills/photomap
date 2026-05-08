@@ -24,6 +24,28 @@ Parameters:
     Type: String
     Default: ''
     Description: MapTiler API key for historic tile layer (optional)
+  GoogleClientId:
+    Type: String
+    Default: ''
+    Description: Google OAuth 2.0 client ID (optional)
+  GoogleClientSecret:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Google OAuth 2.0 client secret (optional)
+  MicrosoftClientId:
+    Type: String
+    Default: ''
+    Description: Microsoft OAuth 2.0 application (client) ID (optional)
+  MicrosoftClientSecret:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Microsoft OAuth 2.0 client secret (optional)
+  PermittedUsers:
+    Type: String
+    Default: ''
+    Description: Comma-separated email addresses allowed to sign in via OAuth
 
 Resources:
 
@@ -40,6 +62,11 @@ Resources:
           ADMIN_PASSWORD: !Ref AdminPassword
           SESSION_SECRET: !Ref SessionSecret
           MAPTILER_KEY: !Ref MaptilerKey
+          GOOGLE_CLIENT_ID: !Ref GoogleClientId
+          GOOGLE_CLIENT_SECRET: !Ref GoogleClientSecret
+          MICROSOFT_CLIENT_ID: !Ref MicrosoftClientId
+          MICROSOFT_CLIENT_SECRET: !Ref MicrosoftClientSecret
+          PERMITTED_USERS: !Ref PermittedUsers
           POIS_TABLE: !Ref PhotomapPois
           PHOTOS_TABLE: !Ref PhotomapPhotos
           ROUTES_TABLE: !Ref PhotomapRoutes
