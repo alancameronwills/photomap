@@ -109,9 +109,10 @@ function updateLayerButtons() {
   document.getElementById('layer-switcher').querySelectorAll('.layer-btn').forEach(btn => {
     const name = btn.dataset.layer;
     btn.classList.toggle('active', name === displayed);
-    // 'fallback' marks the intended layer while aerial is covering for it
     btn.classList.toggle('fallback', aerialFallback && name === activeLayerName);
   });
+  const sel = document.getElementById('layer-select');
+  if (sel) sel.value = activeLayerName;
 }
 
 function handleZoomForLayer() {
@@ -148,6 +149,32 @@ map.on('moveend', () => {
 
 function initLayerSwitcher() {
   const container = document.getElementById('layer-switcher');
+
+  // Dropdown for small screens
+  const select = document.createElement('select');
+  select.id = 'layer-select';
+  select.className = 'layer-select';
+  Object.keys(TILE_LAYERS).forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    if (name === activeLayerName) opt.selected = true;
+    select.appendChild(opt);
+  });
+  select.addEventListener('change', () => {
+    const name = select.value;
+    const currently = displayedLayerName();
+    if (name === currently && name === activeLayerName) return;
+    map.removeLayer(TILE_LAYERS[currently]);
+    map.addLayer(TILE_LAYERS[name]);
+    activeLayerName = name;
+    aerialFallback = false;
+    updateLayerButtons();
+    handleZoomForLayer();
+  });
+  container.appendChild(select);
+
+  // Buttons for large screens
   Object.keys(TILE_LAYERS).forEach(name => {
     const btn = document.createElement('button');
     btn.dataset.layer = name;
@@ -162,7 +189,6 @@ function initLayerSwitcher() {
       activeLayerName = name;
       aerialFallback = false;
       updateLayerButtons();
-      // Immediately re-check: if already zoomed past this layer's limit, fall back again
       handleZoomForLayer();
     });
     container.appendChild(btn);

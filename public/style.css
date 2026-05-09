@@ -752,6 +752,26 @@ body, html {
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   box-shadow: 0 1px 4px rgba(0,0,0,0.3);
 }
+
+.layer-select {
+  display: none;
+  background: rgba(15, 15, 30, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #c8c8dc;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+.layer-select option { background: #1e1e32; color: #fff; }
+
+@media (max-width: 1000px) {
+  .layer-btn    { display: none; }
+  .layer-select { display: block; }
+}
 .layer-btn:hover {
   background: rgba(255,255,255,0.12);
   color: #fff;
