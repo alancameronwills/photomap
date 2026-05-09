@@ -20,7 +20,9 @@
 </head>
 <body>
 
-<div id="map"></div>
+<div id="map">
+  <div id="crosshair" class="hidden"></div>
+</div>
 
 <!-- Top toolbar -->
 <div id="toolbar">
@@ -36,6 +38,7 @@
     <button id="btn-bulk-upload" class="toolbar-btn hidden">Upload Photos</button>
     <input type="file" id="bulk-file-input" multiple accept="image/*" style="display:none"/>
     <button id="btn-enter-route-edit" class="toolbar-btn hidden">Edit Routes</button>
+    <button id="btn-tracking" class="toolbar-btn">Track</button>
     <button id="btn-edit-mode" class="toolbar-btn">Edit Mode</button>
     <button id="btn-logout" class="toolbar-btn hidden">Sign Out</button>
   </div>
@@ -187,6 +190,24 @@
     <div class="modal-actions">
       <button id="btn-new-cancel" class="btn-secondary">Cancel</button>
       <button id="btn-new-save" class="btn-primary">Create POI</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tracking panel (half-screen POI view) -->
+<div id="tracking-panel" class="hidden">
+  <div id="tracking-empty" class="tracking-empty">Pan map to a POI</div>
+  <div id="tracking-content" class="hidden">
+    <div id="tracking-photo-wrap">
+      <img id="tracking-photo" src="" alt=""/>
+      <div id="tracking-dir-label" class="hidden"></div>
+      <div id="tracking-caption"></div>
+      <button id="tracking-prev" class="tracking-nav tracking-prev hidden">&#8249;</button>
+      <button id="tracking-next" class="tracking-nav tracking-next hidden">&#8250;</button>
+    </div>
+    <div id="tracking-info">
+      <div id="tracking-title"></div>
+      <div id="tracking-note"></div>
     </div>
   </div>
 </div>

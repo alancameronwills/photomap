@@ -143,6 +143,7 @@ map.on('zoomend', () => {
 map.on('moveend', () => {
   const c = map.getCenter();
   localStorage.setItem('mapView', JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
+  if (trackingMode && !editMode) updateTrackingDisplay();
 });
 
 function initLayerSwitcher() {
@@ -202,6 +203,10 @@ let currentMarkerPos = null;    // {x, y} fractions 0-1, or null — while edit 
 let directionPref = 0;          // 0 = all, 1 or 2 = show that direction first / hide opposite
 let currentRoute = null;        // Route whose direction names apply to the current view
 let previousPoiId = null;       // Most recently opened POI id (for route determination)
+let trackingMode = false;
+let trackingPoiId = null;
+let trackingPhotoIdx = 0;
+let trackingPhotos = [];
 
 function getDirName(dir) {
   if (dir === 1) return currentRoute?.dir1_name || '1';
@@ -383,6 +388,18 @@ function setEditMode(on) {
     for (const poi of Object.values(pois)) {
       if (shouldHidePoi(poi)) removeMarker(poi.id);
     }
+  }
+
+  // Tracking mode: collapse split while editing, restore when done
+  if (trackingMode) {
+    $('tracking-panel').classList.toggle('hidden', on);
+    if (on) {
+      document.body.classList.remove('tracking-portrait', 'tracking-landscape');
+    } else {
+      updateTrackingLayout();
+      updateTrackingDisplay();
+    }
+    map.invalidateSize();
   }
 }
 
@@ -1725,6 +1742,28 @@ async function addNodeAtPoi(poiId) {
 
 // ── Route edit event wiring ───────────────────────────────────────────────────
 
+$('btn-tracking').addEventListener('click', () => setTrackingMode(!trackingMode));
+
+window.addEventListener('resize', updateTrackingLayout);
+
+$('tracking-prev').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!trackingPhotos.length) return;
+  trackingPhotoIdx = (trackingPhotoIdx - 1 + trackingPhotos.length) % trackingPhotos.length;
+  updateTrackingPhoto();
+});
+$('tracking-next').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!trackingPhotos.length) return;
+  trackingPhotoIdx = (trackingPhotoIdx + 1) % trackingPhotos.length;
+  updateTrackingPhoto();
+});
+$('tracking-photo-wrap').addEventListener('click', () => {
+  if (!trackingPoiId || !trackingPhotos.length) return;
+  const poi = pois[trackingPoiId];
+  if (poi) openLightbox(poi, trackingPhotoIdx);
+});
+
 $('btn-enter-route-edit').addEventListener('click', () => {
   if (routeEditMode) exitRouteEditMode(); else enterRouteEditMode();
 });
@@ -1851,6 +1890,96 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'z' && e.ctrlKey) { e.preventDefault(); undoLastNode(); }
 });
 
+// ── Tracking mode ────────────────────────────────────────────────────────────
+
+function setTrackingMode(on) {
+  trackingMode = on;
+  $('btn-tracking').classList.toggle('active', on);
+  $('crosshair').classList.toggle('hidden', !on);
+  if (on && !editMode) {
+    $('tracking-panel').classList.remove('hidden');
+    updateTrackingLayout();
+    updateTrackingDisplay();
+  } else {
+    $('tracking-panel').classList.add('hidden');
+    document.body.classList.remove('tracking-portrait', 'tracking-landscape');
+    map.invalidateSize();
+  }
+}
+
+function updateTrackingLayout() {
+  if (!trackingMode || editMode) return;
+  const portrait = window.innerHeight > window.innerWidth;
+  document.body.classList.toggle('tracking-portrait', portrait);
+  document.body.classList.toggle('tracking-landscape', !portrait);
+  map.invalidateSize();
+}
+
+function getPoiAtCrosshair() {
+  const sz = map.getSize();
+  const cx = sz.x / 2, cy = sz.y / 2;
+  const THRESHOLD = 40;
+  let closest = null, minDist = THRESHOLD;
+  for (const poi of Object.values(pois)) {
+    if (shouldHidePoi(poi)) continue;
+    const pt = map.latLngToContainerPoint([poi.lat, poi.lng]);
+    const d = Math.hypot(pt.x - cx, pt.y - cy);
+    if (d < minDist) { minDist = d; closest = poi; }
+  }
+  return closest;
+}
+
+function updateTrackingDisplay() {
+  if (!trackingMode || editMode) return;
+  const poi = getPoiAtCrosshair();
+  const newId = poi ? poi.id : null;
+  if (newId === trackingPoiId) return;
+  trackingPoiId = newId;
+  if (poi) {
+    updateCurrentRouteForPoi(poi);
+    renderTrackingPanel(poi);
+  } else {
+    clearTrackingPanel();
+  }
+}
+
+function renderTrackingPanel(poi) {
+  trackingPhotos = sortedPhotos(poi);
+  trackingPhotoIdx = 0;
+  $('tracking-empty').classList.add('hidden');
+  $('tracking-content').classList.remove('hidden');
+  updateTrackingPhoto();
+  $('tracking-title').textContent = poi.title || '';
+  $('tracking-note').textContent = poi.note || '';
+  $('tracking-info').classList.toggle('hidden', !poi.title && !poi.note);
+}
+
+function updateTrackingPhoto() {
+  const ph = trackingPhotos[trackingPhotoIdx];
+  if (!ph) { $('tracking-photo-wrap').classList.add('hidden'); return; }
+  $('tracking-photo').src = ph.url || `/uploads/originals/${ph.filename}`;
+  $('tracking-photo-wrap').classList.remove('hidden');
+  const dl = $('tracking-dir-label');
+  if (ph.direction) {
+    dl.textContent = `Direction: ${getDirName(ph.direction)}`;
+    dl.classList.remove('hidden');
+  } else {
+    dl.classList.add('hidden');
+  }
+  $('tracking-caption').textContent = ph.caption || '';
+  const multi = trackingPhotos.length > 1;
+  $('tracking-prev').classList.toggle('hidden', !multi);
+  $('tracking-next').classList.toggle('hidden', !multi);
+}
+
+function clearTrackingPanel() {
+  trackingPhotos = [];
+  trackingPhotoIdx = 0;
+  $('tracking-photo').src = '';
+  $('tracking-empty').classList.remove('hidden');
+  $('tracking-content').classList.add('hidden');
+}
+
 // ── Direction preference ──────────────────────────────────────────────────────
 
 function sortedPhotos(poi) {
@@ -1901,9 +2030,11 @@ $('dir-pref').addEventListener('click', (e) => {
 // ── Init ──────────────────────────────────────────────────────────────────────
 initLayerSwitcher();
 initDirPref();
+if (window.innerWidth <= 768) setTrackingMode(true);
 (async () => {
   await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
   const overlay = document.getElementById('loading-overlay');
   overlay.classList.add('hidden');
   overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+  if (trackingMode) updateTrackingDisplay();
 })();
