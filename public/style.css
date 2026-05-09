@@ -1200,6 +1200,43 @@ body.tracking-landscape #crosshair { left: 75%; }
   transform: translateY(-50%);
 }
 
+/* Brief red flash when tracking is turned on, drawing the user's eye to the
+   crosshair. Six cycles × 0.8s = 5s total. */
+#crosshair.flash::before,
+#crosshair.flash::after {
+  animation: crosshair-flash 0.8s ease-in-out 6;
+}
+@keyframes crosshair-flash {
+  0%, 100% { background: #fff;     box-shadow: 0 0 0 1px rgba(0,0,0,0.65); }
+  50%      { background: #ef4444;  box-shadow: 0 0 0 1px rgba(0,0,0,0.65), 0 0 16px rgba(239,68,68,0.9); }
+}
+
+/* Onboarding tooltip near the crosshair */
+.crosshair-tip {
+  position: fixed;
+  z-index: 950;
+  pointer-events: none;
+  background: rgba(0,0,0,0.85);
+  color: #fff;
+  font-size: 0.9rem;
+  padding: 7px 12px;
+  border-radius: 6px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  transform: translate(-50%, calc(-100% - 22px));
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.crosshair-tip.show { opacity: 1; }
+.crosshair-tip::after {
+  content: '';
+  position: absolute;
+  top: 100%; left: 50%;
+  transform: translateX(-50%);
+  border: 7px solid transparent;
+  border-top-color: rgba(0,0,0,0.85);
+}
+
 /* ── Loading overlay ── */
 #loading-overlay {
   position: fixed;

@@ -43,15 +43,15 @@
   <div id="toolbar-right">
     <button id="btn-bulk-upload" class="toolbar-btn hidden">Upload Photos</button>
     <input type="file" id="bulk-file-input" multiple accept="image/*" style="display:none"/>
-    <button id="btn-enter-route-edit" class="toolbar-btn hidden">Edit Routes</button>
-    <button id="btn-edit-mode" class="toolbar-btn">Edit</button>
-    <button id="btn-tracking" class="toolbar-btn">Track</button>
+    <button id="btn-enter-route-edit" class="toolbar-btn hidden" title="Draw routes on the map">Edit Routes</button>
+    <button id="btn-edit-mode" class="toolbar-btn" title="Add notes and photos to the map">Edit</button>
+    <button id="btn-tracking" class="toolbar-btn" title="Show POI info as you move map">Track</button>
     <button id="btn-logout" class="toolbar-btn hidden">Sign Out</button>
     <button id="btn-help" class="toolbar-btn toolbar-btn-help" title="Help" aria-label="Help">?</button>
   </div>
   <!-- Mobile dropdown menu -->
   <div id="mobile-menu" class="mobile-menu hidden">
-    <button id="mob-tracking"          class="mobile-menu-item">Track</button>
+    <button id="mob-tracking"          class="mobile-menu-item" title="Show POI info as you move the map">Track</button>
     <button id="mob-edit-mode"         class="mobile-menu-item">Edit</button>
     <button id="mob-enter-route-edit"  class="mobile-menu-item hidden">Edit Routes</button>
     <button id="mob-bulk-upload"       class="mobile-menu-item hidden">Upload Photos</button>
@@ -230,6 +230,9 @@
     </div>
   </div>
 </div>
+
+<!-- Crosshair onboarding tooltip (shown briefly when tracking turns on) -->
+<div id="crosshair-tip" class="crosshair-tip">move points here to see details</div>
 
 <!-- Help / welcome modal -->
 <div id="help-overlay" class="overlay hidden">

@@ -563,14 +563,16 @@ function setEditMode(on) {
     }
   }
 
-  // Tracking mode: hide panel while editing, restore orientation and display when done
+  // Tracking mode: hide panel and crosshair while editing, restore on exit
   if (trackingMode) {
     if (on) {
       clearTrackingPanel();
       document.body.classList.remove('tracking-portrait', 'tracking-landscape');
+      $('crosshair').classList.add('hidden');
     } else {
       updateTrackingLayout();
       updateTrackingDisplay();
+      $('crosshair').classList.remove('hidden');
     }
   }
   syncMobileMenu();
@@ -2043,6 +2045,7 @@ document.addEventListener('keydown', (e) => {
 // ── Tracking mode ────────────────────────────────────────────────────────────
 
 function setTrackingMode(on) {
+  const turningOn = on && !trackingMode;
   trackingMode = on;
   $('btn-tracking').classList.toggle('active', on);
   $('crosshair').classList.toggle('hidden', !on);
@@ -2055,6 +2058,26 @@ function setTrackingMode(on) {
   }
   syncMobileMenu();
   updateLiveTrackBtn();
+  // Onboarding cue: flash the crosshair red and pop a tooltip on the off→on
+  // transition. Wait a tick so layout (panel position, crosshair offset) has
+  // settled before measuring its rect.
+  if (turningOn && !editMode) setTimeout(showCrosshairHint, 50);
+}
+
+function showCrosshairHint() {
+  const ch = document.getElementById('crosshair');
+  if (!ch || ch.classList.contains('hidden')) return;
+  ch.classList.remove('flash');
+  void ch.offsetWidth;          // force restart if invoked again quickly
+  ch.classList.add('flash');
+  setTimeout(() => ch.classList.remove('flash'), 5000);
+
+  const tip = document.getElementById('crosshair-tip');
+  const r = ch.getBoundingClientRect();
+  tip.style.left = (r.left + r.width / 2) + 'px';
+  tip.style.top  = r.top + 'px';
+  tip.classList.add('show');
+  setTimeout(() => tip.classList.remove('show'), 6000);
 }
 
 function updateTrackingLayout() {
@@ -2086,17 +2109,17 @@ function getCrosshairPixel() {
 }
 
 // A POI qualifies for the tracking panel if any of:
-//   1. Its location is within 40 m (ground) of the crosshair.
+//   1. Its location is within 100 m (ground) of the crosshair.
 //   2. The crosshair pixel lies within its marker icon on screen.
 //   3. The crosshair pixel lies within the cluster icon that currently
 //      represents it (for zoom levels where multiple POIs merge into a
-//      cluster much larger than 40 m on the ground).
+//      cluster much larger than 100 m on the ground).
 // Among qualifying POIs, return the one whose lat/lng is closest to the
 // crosshair.
 function getPoiAtCrosshair() {
   const { x: cx, y: cy } = getCrosshairPixel();
   const crosshair = map.containerPointToLatLng([cx, cy]);
-  const THRESHOLD_METERS = 40;
+  const THRESHOLD_METERS = 100;
   let bestPoi = null, bestDist = Infinity;
   for (const poi of Object.values(pois)) {
     if (shouldHidePoi(poi)) continue;
