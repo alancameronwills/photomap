@@ -585,11 +585,14 @@ body, html {
   cursor: pointer;
   border-radius: 4px;
   line-height: 1;
+  display: flex;
+  align-items: center;
   transition: background 0.15s;
 }
 .lightbox-nav:hover { background: rgba(255,255,255,0.2); }
-.lightbox-prev { left: 8px; }
-.lightbox-next { right: 8px; }
+.lightbox-prev  { left: 8px; }
+.lightbox-pause { left: 80px; font-size: 1.5rem; padding: 7px 10px; }
+.lightbox-next  { right: 8px; }
 
 /* ── Lightbox caption & edit panel ── */
 #lightbox-caption {
@@ -966,12 +969,15 @@ body.tracking-landscape #tracking-panel {
   cursor: pointer;
   border-radius: 3px;
   line-height: 1;
+  display: flex;
+  align-items: center;
   z-index: 1;
   transition: background 0.15s;
 }
 .tracking-nav:hover { background: rgba(255,255,255,0.28); }
-.tracking-prev { left: 4px; }
-.tracking-next { right: 4px; }
+.tracking-prev  { left: 4px; }
+.tracking-pause { left: 52px; font-size: 1.1rem; padding: 4px 6px; }
+.tracking-next  { right: 4px; }
 
 #tracking-info {
   flex-shrink: 0;

@@ -200,6 +200,8 @@ let lightboxPhotos = [];        // full photo objects (may be sorted by directio
 let lightboxIndex = 0;
 let lightboxEditPoiId = null;   // non-null when lightbox opened from edit dialog
 let currentMarkerPos = null;    // {x, y} fractions 0-1, or null — while edit lightbox open
+let lightboxAutoTimer = null;   // setInterval handle for tracking-mode auto-advance
+let lightboxPaused = false;
 let directionPref = 0;          // 0 = all, 1 or 2 = show that direction first / hide opposite
 let currentRoute = null;        // Route whose direction names apply to the current view
 let previousPoiId = null;       // Most recently opened POI id (for route determination)
@@ -207,6 +209,8 @@ let trackingMode = false;
 let trackingPoiId = null;
 let trackingPhotoIdx = 0;
 let trackingPhotos = [];
+let trackingAutoTimer = null;
+let trackingPaused = false;
 
 function getDirName(dir) {
   if (dir === 1) return currentRoute?.dir1_name || '1';
@@ -581,11 +585,41 @@ function closeFullModal() {
 }
 
 // ── Lightbox ─────────────────────────────────────────────────────────────────
+
+// In tracking mode, exclude photos with the opposite direction (unset = always shown).
+function lightboxPhotosFor(poi) {
+  let photos = sortedPhotos(poi);
+  if (trackingMode && directionPref) {
+    photos = photos.filter(ph => !ph.direction || ph.direction === directionPref);
+  }
+  return photos;
+}
+
+function startLightboxAutoAdvance() {
+  stopLightboxAutoAdvance();
+  if (!trackingMode || lightboxPaused || lightboxPhotos.length <= 1) return;
+  lightboxAutoTimer = setInterval(() => {
+    lightboxIndex = (lightboxIndex + 1) % lightboxPhotos.length;
+    updateLightboxImage();
+  }, 4000);
+}
+
+function stopLightboxAutoAdvance() {
+  if (lightboxAutoTimer) { clearInterval(lightboxAutoTimer); lightboxAutoTimer = null; }
+}
+
+function updateLightboxPauseBtn() {
+  const btn = $('lightbox-pause');
+  btn.innerHTML = lightboxPaused ? '&#9654;' : '&#9208;';
+  btn.title = lightboxPaused ? 'Play' : 'Pause';
+}
+
 function openLightbox(poi, startIdx) {
   updateCurrentRouteForPoi(poi);
-  lightboxPhotos = sortedPhotos(poi);
+  lightboxPhotos = lightboxPhotosFor(poi);
   lightboxEditPoiId = null;
-  // Map original index → sorted index so the clicked photo opens first
+  lightboxPaused = false;
+  // Map original index → filtered+sorted index so the clicked photo opens first
   const originalPhoto = poi.photos[startIdx];
   if (originalPhoto) {
     const si = lightboxPhotos.findIndex(p => p.id === originalPhoto.id);
@@ -599,6 +633,9 @@ function openLightbox(poi, startIdx) {
   const multi = lightboxPhotos.length > 1;
   $('lightbox-prev').classList.toggle('hidden', !multi);
   $('lightbox-next').classList.toggle('hidden', !multi);
+  const showPause = trackingMode && multi;
+  $('lightbox-pause').classList.toggle('hidden', !showPause);
+  if (showPause) { updateLightboxPauseBtn(); startLightboxAutoAdvance(); }
   lightbox.classList.remove('hidden');
 }
 
@@ -708,6 +745,8 @@ function stashCurrentLightboxPhotoEdit() {
 }
 
 function closeLightbox() {
+  stopLightboxAutoAdvance();
+  $('lightbox-pause').classList.add('hidden');
   stashCurrentLightboxPhotoEdit();
   lightbox.classList.add('hidden');
   lightboxImg.src = '';
@@ -728,6 +767,8 @@ function lightboxNav(dir) {
   lightboxIndex = (lightboxIndex + dir + lightboxPhotos.length) % lightboxPhotos.length;
   updateLightboxImage();
   if (lightboxEditPoiId) updateEditLightboxPanel();
+  // Restart timer so the newly-selected photo gets a full 4s before auto-advancing
+  if (lightboxAutoTimer) startLightboxAutoAdvance();
 }
 
 // ── Edit dialog ──────────────────────────────────────────────────────────────
@@ -1157,8 +1198,14 @@ lightbox.addEventListener('click', (e) => {
   // In view mode only, clicking the image also closes; in edit mode keep it open for editing
   if (e.target === lightboxImg && !lightboxEditPoiId) closeLightbox();
 });
-$('lightbox-prev').addEventListener('click', (e) => { e.stopPropagation(); lightboxNav(-1); });
-$('lightbox-next').addEventListener('click', (e) => { e.stopPropagation(); lightboxNav(1); });
+$('lightbox-prev').addEventListener('click',  (e) => { e.stopPropagation(); lightboxNav(-1); });
+$('lightbox-next').addEventListener('click',  (e) => { e.stopPropagation(); lightboxNav(1); });
+$('lightbox-pause').addEventListener('click', (e) => {
+  e.stopPropagation();
+  lightboxPaused = !lightboxPaused;
+  updateLightboxPauseBtn();
+  if (lightboxPaused) stopLightboxAutoAdvance(); else startLightboxAutoAdvance();
+});
 
 // Lightbox edit panel — direction buttons and marker rotation buttons
 $('lightbox-edit-panel').addEventListener('click', (e) => {
@@ -1750,12 +1797,20 @@ $('tracking-prev').addEventListener('click', (e) => {
   if (!trackingPhotos.length) return;
   trackingPhotoIdx = (trackingPhotoIdx - 1 + trackingPhotos.length) % trackingPhotos.length;
   updateTrackingPhoto();
+  if (trackingAutoTimer) startTrackingAutoAdvance();
 });
 $('tracking-next').addEventListener('click', (e) => {
   e.stopPropagation();
   if (!trackingPhotos.length) return;
   trackingPhotoIdx = (trackingPhotoIdx + 1) % trackingPhotos.length;
   updateTrackingPhoto();
+  if (trackingAutoTimer) startTrackingAutoAdvance();
+});
+$('tracking-pause').addEventListener('click', (e) => {
+  e.stopPropagation();
+  trackingPaused = !trackingPaused;
+  updateTrackingPauseBtn();
+  if (trackingPaused) stopTrackingAutoAdvance(); else startTrackingAutoAdvance();
 });
 $('tracking-photo-wrap').addEventListener('click', () => {
   if (!trackingPoiId || !trackingPhotos.length) return;
@@ -1941,9 +1996,29 @@ function updateTrackingDisplay() {
   }
 }
 
+function startTrackingAutoAdvance() {
+  stopTrackingAutoAdvance();
+  if (trackingPaused || trackingPhotos.length <= 1) return;
+  trackingAutoTimer = setInterval(() => {
+    trackingPhotoIdx = (trackingPhotoIdx + 1) % trackingPhotos.length;
+    updateTrackingPhoto();
+  }, 4000);
+}
+
+function stopTrackingAutoAdvance() {
+  if (trackingAutoTimer) { clearInterval(trackingAutoTimer); trackingAutoTimer = null; }
+}
+
+function updateTrackingPauseBtn() {
+  const btn = $('tracking-pause');
+  btn.innerHTML = trackingPaused ? '&#9654;' : '&#9208;';
+  btn.title = trackingPaused ? 'Play' : 'Pause';
+}
+
 function renderTrackingPanel(poi) {
-  trackingPhotos = sortedPhotos(poi);
+  trackingPhotos = lightboxPhotosFor(poi);
   trackingPhotoIdx = 0;
+  trackingPaused = false;
   $('tracking-empty').classList.add('hidden');
   $('tracking-content').classList.remove('hidden');
   $('tracking-panel').classList.remove('hidden');
@@ -1951,6 +2026,9 @@ function renderTrackingPanel(poi) {
   $('tracking-title').textContent = poi.title || '';
   $('tracking-note').textContent = poi.note || '';
   $('tracking-info').classList.toggle('hidden', !poi.title && !poi.note);
+  const multi = trackingPhotos.length > 1;
+  $('tracking-pause').classList.toggle('hidden', !multi);
+  if (multi) { updateTrackingPauseBtn(); startTrackingAutoAdvance(); }
 }
 
 function refreshTrackingMarkerOverlay(ph) {
@@ -2008,10 +2086,12 @@ function updateTrackingPhoto() {
 }
 
 function clearTrackingPanel() {
+  stopTrackingAutoAdvance();
   trackingPhotos = [];
   trackingPhotoIdx = 0;
   $('tracking-photo').src = '';
   $('tracking-marker-overlay').innerHTML = '';
+  $('tracking-pause').classList.add('hidden');
   $('tracking-panel').classList.add('hidden');
 }
 
