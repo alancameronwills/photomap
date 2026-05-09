@@ -1216,6 +1216,10 @@ btnEditMode.addEventListener('click', () => {
   } else if (authenticated) {
     setEditMode(true);
   } else {
+    // Mark that this login flow was triggered by clicking Edit so an OAuth
+    // redirect that lands us back here authenticated will drop straight into
+    // edit mode. Cleared on cancel / outside-click / Escape and after use.
+    localStorage.setItem('editAfterAuth', '1');
     loginOverlay.classList.remove('hidden');
     loginPassword.value = '';
     loginError.classList.add('hidden');
@@ -1226,7 +1230,11 @@ btnEditMode.addEventListener('click', () => {
 btnLogout.addEventListener('click', logout);
 
 // Login modal
-$('btn-login-cancel').addEventListener('click', () => loginOverlay.classList.add('hidden'));
+function dismissLoginOverlay() {
+  loginOverlay.classList.add('hidden');
+  localStorage.removeItem('editAfterAuth');
+}
+$('btn-login-cancel').addEventListener('click', dismissLoginOverlay);
 
 $('btn-login-submit').addEventListener('click', async () => {
   try {
@@ -1234,6 +1242,7 @@ $('btn-login-submit').addEventListener('click', async () => {
     loginOverlay.classList.add('hidden');
     loginError.classList.add('hidden');
     btnLogout.classList.remove('hidden');
+    localStorage.removeItem('editAfterAuth');
     setEditMode(true);
   } catch {
     loginError.classList.remove('hidden');
@@ -1246,7 +1255,7 @@ loginPassword.addEventListener('keydown', (e) => {
 });
 
 loginOverlay.addEventListener('click', (e) => {
-  if (e.target === loginOverlay) loginOverlay.classList.add('hidden');
+  if (e.target === loginOverlay) dismissLoginOverlay();
 });
 
 // Preview panel
@@ -2390,5 +2399,11 @@ if (Math.min(window.innerWidth, window.innerHeight) <= 768) setTrackingMode(true
   overlay.classList.add('hidden');
   overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
   if (trackingMode) updateTrackingDisplay();
+  // If the user landed back here from an OAuth redirect that started with a
+  // click on Edit, drop them straight into edit mode.
+  if (authenticated && localStorage.getItem('editAfterAuth')) {
+    localStorage.removeItem('editAfterAuth');
+    setEditMode(true);
+  }
   maybeShowHelp('welcome');
 })();
