@@ -576,6 +576,7 @@ function setEditMode(on) {
   }
   syncMobileMenu();
   updateLiveTrackBtn();
+  if (on) maybeShowHelp('edit');
 }
 
 // ── Marker creation ──────────────────────────────────────────────────────────
@@ -2191,6 +2192,57 @@ function clearTrackingPanel() {
   $('tracking-panel').classList.add('hidden');
 }
 
+// ── Help / welcome ────────────────────────────────────────────────────────────
+const HELP_CONTENT = {
+  welcome: () => {
+    // Tracking mode reflects the device class — auto-enabled on phones,
+    // manually toggleable elsewhere. Use it as the cue for which guide to show.
+    const isMobile = trackingMode;
+    return `
+      <p><strong>Map y Ffoto</strong> shows photos, notes and routes pinned to a map.</p>
+      <ul>
+        <li>Tap any photo or dot to see its photos and notes.</li>
+        ${isMobile
+          ? `<li><strong>Tracking is on:</strong> pan the map to see photos and notes near the centre crosshair.</li>
+             <li>Tap the <strong>target button</strong> on the right edge of the map to follow your live GPS location.</li>
+             <li>Use the toolbar to switch between map layers (top right) and to filter photos by direction (top left).</li>`
+          : `<li>Switch between map types at top right.</li>
+             <li>Filter photos by path direction at top left.</li>
+             <li>Click <strong>Track</strong> to show details of the nearest point of interest as you move the map.</li>`}
+      </ul>
+      <p style="opacity:0.75; font-size:0.85rem;">Choose <strong>Help</strong> on the menu to re-open this.</p>
+    `;
+  },
+  edit: () => `
+    <p>You're in <strong>Edit Mode</strong>.</p>
+    <ul>
+      <li><strong>Click the map</strong> to add a new point of interest (title, notes, photos).</li>
+      <li><strong>Drag</strong> a marker to reposition it.</li>
+      <li><strong>Click</strong> a marker to edit its title, notes or photos. In the photo editor, click on a photo to drop a directional arrow marker.</li>
+      <li>Click <strong>Edit Routes</strong> (toolbar, or the shortcut on the right of the orange bar) to draw or edit routes between points.</li>
+      <li>Use <strong>Upload Photos</strong> to bulk-import a folder — GPS data places them automatically.</li>
+    </ul>
+  `,
+};
+
+function showHelp(key) {
+  if (!HELP_CONTENT[key]) return;
+  $('help-title').textContent = key === 'edit' ? 'Editing' : 'Welcome';
+  $('help-content').innerHTML = HELP_CONTENT[key]();
+  $('help-overlay').classList.remove('hidden');
+  localStorage.setItem(`helpSeen_${key}`, '1');
+}
+
+function maybeShowHelp(key) {
+  if (!localStorage.getItem(`helpSeen_${key}`)) showHelp(key);
+}
+
+function closeHelp() { $('help-overlay').classList.add('hidden'); }
+
+$('btn-help').addEventListener('click', () => showHelp('welcome'));
+$('help-close').addEventListener('click', closeHelp);
+$('btn-help-ok').addEventListener('click', closeHelp);
+
 // ── Direction preference ──────────────────────────────────────────────────────
 
 function sortedPhotos(poi) {
@@ -2278,7 +2330,7 @@ $('btn-mobile-menu').addEventListener('click', (e) => {
   if (opening) syncMobileMenu();
 });
 
-['mob-tracking', 'mob-edit-mode', 'mob-bulk-upload', 'mob-enter-route-edit', 'mob-logout'].forEach(id => {
+['mob-tracking', 'mob-edit-mode', 'mob-bulk-upload', 'mob-enter-route-edit', 'mob-logout', 'mob-help'].forEach(id => {
   $(id).addEventListener('click', () => {
     $('mobile-menu').classList.add('hidden');
     $(id.replace('mob-', 'btn-')).click();
@@ -2338,4 +2390,5 @@ if (Math.min(window.innerWidth, window.innerHeight) <= 768) setTrackingMode(true
   overlay.classList.add('hidden');
   overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
   if (trackingMode) updateTrackingDisplay();
+  maybeShowHelp('welcome');
 })();

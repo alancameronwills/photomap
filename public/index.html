@@ -29,11 +29,11 @@
   <div id="toolbar-left">
     <span id="app-title">Map y Ffoto</span>
     <div id="dir-pref" title="Direction preference — filter photos by direction">
-      <button class="dir-btn active" data-dir="">All</button>
+      <button class="dir-btn active" data-dir="">Direction</button>
       <button class="dir-btn" data-dir="1">1</button>
       <button class="dir-btn" data-dir="2">2</button>
       <select id="dir-pref-select" class="dir-pref-select">
-        <option value="">All</option>
+        <option value="">Direction</option>
         <option value="1">1</option>
         <option value="2">2</option>
       </select>
@@ -46,6 +46,7 @@
     <button id="btn-enter-route-edit" class="toolbar-btn hidden">Edit Routes</button>
     <button id="btn-tracking" class="toolbar-btn">Track</button>
     <button id="btn-edit-mode" class="toolbar-btn">Edit</button>
+    <button id="btn-help" class="toolbar-btn toolbar-btn-help" title="Help" aria-label="Help">?</button>
     <button id="btn-logout" class="toolbar-btn hidden">Sign Out</button>
   </div>
   <!-- Mobile dropdown menu -->
@@ -54,6 +55,7 @@
     <button id="mob-edit-mode"         class="mobile-menu-item">Edit</button>
     <button id="mob-bulk-upload"       class="mobile-menu-item hidden">Upload Photos</button>
     <button id="mob-enter-route-edit"  class="mobile-menu-item hidden">Edit Routes</button>
+    <button id="mob-help"              class="mobile-menu-item">Help</button>
     <button id="mob-logout"            class="mobile-menu-item hidden">Sign Out</button>
   </div>
 </div>
@@ -225,6 +227,19 @@
     <div id="tracking-info">
       <div id="tracking-title"></div>
       <div id="tracking-note"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Help / welcome modal -->
+<div id="help-overlay" class="overlay hidden">
+  <div class="modal modal-large">
+    <button class="close-btn modal-close-btn" id="help-close" aria-label="Close">&#x2715;</button>
+    <h2 id="help-title">Welcome</h2>
+    <div id="help-content" class="help-content"></div>
+    <div class="modal-actions">
+      <div style="flex:1"></div>
+      <button id="btn-help-ok" class="btn-primary">Got it</button>
     </div>
   </div>
 </div>

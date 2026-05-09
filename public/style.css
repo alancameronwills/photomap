@@ -159,6 +159,21 @@ body, html {
   background: #2563eb;
   border-color: #2563eb;
 }
+.toolbar-btn-help {
+  width: 30px; height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Help / welcome modal content */
+.help-content { color: #e0e0f0; line-height: 1.55; font-size: 0.95rem; }
+.help-content p  { margin: 0 0 12px; }
+.help-content ul { margin: 0 0 12px; padding-left: 20px; }
+.help-content li { margin: 6px 0; }
+.help-content strong { color: #fff; }
 
 /* ── Leaflet overrides ── */
 .leaflet-control-layers {
