@@ -523,7 +523,6 @@ function setEditMode(on) {
   editIndicator.classList.toggle('hidden', !on);
   $('btn-bulk-upload').classList.toggle('hidden', !on);
   $('btn-enter-route-edit').classList.toggle('hidden', !on);
-  btnEditMode.textContent = on ? 'Done' : 'Edit';
   btnEditMode.classList.toggle('active', on);
   document.getElementById('map').classList.toggle('edit-active', on);
 
@@ -1713,7 +1712,7 @@ function enterRouteEditMode() {
   waitingForRouteStart = true;
   extendingFromStart = false;
   activeRouteId = null;
-  $('btn-enter-route-edit').textContent = 'Done Editing Routes';
+  $('btn-enter-route-edit').classList.add('active');
   routeEditIndicator.classList.remove('hidden');
   editIndicator.classList.add('hidden');
   document.getElementById('map').classList.add('route-edit-active');
@@ -1738,7 +1737,7 @@ function exitRouteEditMode() {
   extendingFromStart = false;
   undoStack = [];
   updateUndoBtn();
-  $('btn-enter-route-edit').textContent = 'Edit Routes';
+  $('btn-enter-route-edit').classList.remove('active');
   routeEditIndicator.classList.add('hidden');
   if (editMode) editIndicator.classList.remove('hidden');
   document.getElementById('map').classList.remove('route-edit-active');
