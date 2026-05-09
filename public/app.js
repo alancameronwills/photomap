@@ -2109,17 +2109,17 @@ function getCrosshairPixel() {
 }
 
 // A POI qualifies for the tracking panel if any of:
-//   1. Its location is within 100 m (ground) of the crosshair.
+//   1. Its location is within THRESHOLD_METERS (ground) of the crosshair.
 //   2. The crosshair pixel lies within its marker icon on screen.
 //   3. The crosshair pixel lies within the cluster icon that currently
 //      represents it (for zoom levels where multiple POIs merge into a
-//      cluster much larger than 100 m on the ground).
+//      cluster much larger than THRESHOLD_METERS on the ground).
 // Among qualifying POIs, return the one whose lat/lng is closest to the
 // crosshair.
 function getPoiAtCrosshair() {
   const { x: cx, y: cy } = getCrosshairPixel();
   const crosshair = map.containerPointToLatLng([cx, cy]);
-  const THRESHOLD_METERS = 100;
+  const THRESHOLD_METERS = 60;
   let bestPoi = null, bestDist = Infinity;
   for (const poi of Object.values(pois)) {
     if (shouldHidePoi(poi)) continue;
@@ -2415,6 +2415,22 @@ document.addEventListener('click', () => {
 initLayerSwitcher();
 initDirPref();
 if (Math.min(window.innerWidth, window.innerHeight) <= 768) setTrackingMode(true);
+
+// On a touch device, try to coax the mobile browser into hiding its URL bar by
+// momentarily giving the document a sliver of scrollable height and scrolling
+// past it. Doesn't work on every browser (current Chrome and iOS Safari are
+// usually only persuaded by user-initiated scrolling) but harmless when not.
+// Real standalone-mode hiding is handled by the PWA meta tags + Add to Home
+// Screen.
+if (Math.min(window.innerWidth, window.innerHeight) <= 768 && 'ontouchstart' in window) {
+  const tryHideBar = () => {
+    document.documentElement.style.minHeight = 'calc(100% + 1px)';
+    window.scrollTo(0, 1);
+    setTimeout(() => { document.documentElement.style.minHeight = ''; }, 250);
+  };
+  if (document.readyState === 'complete') tryHideBar();
+  else window.addEventListener('load', tryHideBar, { once: true });
+}
 (async () => {
   await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
   const overlay = document.getElementById('loading-overlay');

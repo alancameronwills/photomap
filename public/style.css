@@ -873,6 +873,13 @@ body, html {
   flex-direction: column;
   gap: 3px;
 }
+/* In portrait tracking mode the top of the map is covered by the toolbar +
+   tracking panel, so reposition the layer switcher to the bottom-left of the
+   visible map area. */
+body.tracking-portrait #layer-switcher {
+  top: auto; right: auto;
+  bottom: 30px; left: 10px;
+}
 
 .layer-btn {
   background: rgba(15, 15, 30, 0.85);
