@@ -821,6 +821,33 @@ body, html {
   bottom: 42px;
 }
 
+/* ── Live tracking button ── */
+.live-track-btn {
+  position: fixed;
+  right: 12px;
+  bottom: 25vh;
+  z-index: 700;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: rgba(15,15,30,0.85);
+  border: 2px solid rgba(255,255,255,0.3);
+  color: #c0c0d0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.live-track-btn.hidden { display: none; }
+.live-track-btn:hover { background: rgba(15,15,30,1); color: #fff; }
+.live-track-btn.active {
+  background: #2563eb;
+  border-color: #60a5fa;
+  color: #fff;
+}
+.live-track-btn.active:hover { background: #1d4ed8; }
+
 /* ── Layer switcher ── */
 #layer-switcher {
   position: fixed;
@@ -1020,12 +1047,10 @@ body, html {
 }
 body.tracking-portrait #tracking-panel {
   top: var(--toolbar-height, 52px); left: 0; right: 0;
-  height: calc((100vh - var(--toolbar-height, 52px)) / 2);
-  box-shadow: 0 6px 24px rgba(0,0,0,0.7);
+  height: 33vh;
 }
 body.tracking-landscape #tracking-panel {
   top: var(--toolbar-height, 52px); left: 0; width: 50%; bottom: 0;
-  box-shadow: 6px 0 24px rgba(0,0,0,0.7);
 }
 
 .tracking-empty {
@@ -1137,8 +1162,11 @@ body.tracking-landscape #tracking-panel {
   z-index: 900;
   pointer-events: none;
 }
-/* In tracking mode the panel overlays one half, so offset crosshair to centre of the other half */
-body.tracking-portrait  #crosshair { top: 75%; }
+/* In tracking mode the panel overlays the top (portrait) or left (landscape);
+   offset the crosshair to the centre of the visible map area beyond it.
+   Portrait panel = 33vh below the toolbar, so visible map runs from
+   (toolbar + 33vh) to 100vh — its centre sits at toolbar/2 + 66.5vh. */
+body.tracking-portrait  #crosshair { top:  calc(var(--toolbar-height, 52px) / 2 + 66.5vh); }
 body.tracking-landscape #crosshair { left: 75%; }
 #crosshair::before, #crosshair::after {
   content: '';

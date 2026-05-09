@@ -118,6 +118,25 @@ At ≤480px the toolbar wraps to two rows (title on its own line, dir-pref + ⋮
 
 `--toolbar-height` is a CSS variable kept in sync with `#toolbar.offsetHeight` (set by `updateToolbarHeightVar()`, called on resize). The tracking panel positions itself relative to it (`top: var(--toolbar-height)`) so it sits below the actual toolbar height even when the toolbar wraps to two rows on narrow screens.
 
+#### Tracking mode
+
+Auto-enabled on load when `Math.min(window.innerWidth, window.innerHeight) <= 768` (catches phones in either orientation but not tablets/desktops).
+
+**Layout.** Portrait: panel at `top: var(--toolbar-height); height: 33vh`, map fills the remaining ~67vh below. Landscape: panel takes the left 50%, map the right 50%. The `#crosshair` element is positioned by CSS at the centre of the visible map area (`top: calc(var(--toolbar-height)/2 + 66.5vh)` portrait, `left: 75%` landscape).
+
+**Crosshair pixel — `getCrosshairPixel()`.** Reads the rendered `#crosshair` element's `getBoundingClientRect` rather than recomputing from `sz.y * 0.33`. Important on Android: the dynamic URL bar makes `100vh` (used by CSS) and `window.innerHeight` (used by `map.getSize()`) drift apart by tens of pixels, which would otherwise put the JS detection out of step with the visible crosshair.
+
+**POI matching — `getPoiAtCrosshair()`.** A POI qualifies when *any* of:
+1. Its lat/lng is within 40 m (ground distance, via `map.distance`) of the crosshair.
+2. The crosshair pixel falls within its marker icon (radius = max(iconSize.x, iconSize.y) / 2).
+3. The crosshair pixel falls within the cluster icon currently representing it — `clusterGroup.getVisibleParent(marker)` returns the marker itself when unclustered, or the parent cluster when clustered.
+
+Among qualifying POIs the one with the smallest ground distance wins. The icon-overlap test does *not* gate on `parent._icon` because MarkerCluster's `removeOutsideVisibleBounds` (default `true`) prunes elements at the viewport edge, making `_icon` flicker null even for visible POIs. `iconSize` is normalised through `L.point()` since marker icons store it as `[w, h]` arrays while cluster icons store it as `L.Point` objects.
+
+**Live GPS tracking.** `#btn-live-track` (target icon, `position: fixed; right: 12px; bottom: 25vh`) is shown only in tracking mode + view mode + when `navigator.geolocation` is available (`updateLiveTrackBtn()`). Clicking it calls `navigator.geolocation.watchPosition`; each fix calls `panMapToUserLocation(lat, lng)` which `map.panBy`s the offset between the user's pixel and the crosshair pixel. A user-initiated `dragstart` turns it off (programmatic `panBy` does not fire `dragstart`).
+
+**No-photos POI.** `renderTrackingPanel(poi)` hides `#tracking-photo-wrap` when `lightboxPhotosFor(poi)` is empty so the empty `<img>` doesn't render as a broken-image icon — only title and note are shown.
+
 #### Bottom indicators
 
 Only one of `#edit-indicator` (orange "Edit Mode" banner) and `#route-edit-indicator` (blue route-editing controls) is visible at a time. Both sit at `bottom: 0`. `enterRouteEditMode` hides the edit-indicator; `exitRouteEditMode` restores it (when `editMode` is still true). The Edit-Mode banner has an "Edit Routes" shortcut button on the right that proxies clicks to `btn-enter-route-edit`.

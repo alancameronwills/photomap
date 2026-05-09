@@ -575,6 +575,7 @@ function setEditMode(on) {
     }
   }
   syncMobileMenu();
+  updateLiveTrackBtn();
 }
 
 // ── Marker creation ──────────────────────────────────────────────────────────
@@ -2044,6 +2045,7 @@ function setTrackingMode(on) {
     document.body.classList.remove('tracking-portrait', 'tracking-landscape');
   }
   syncMobileMenu();
+  updateLiveTrackBtn();
 }
 
 function updateTrackingLayout() {
@@ -2060,20 +2062,60 @@ function updateToolbarHeightVar() {
 }
 updateToolbarHeightVar();
 
-function getPoiAtCrosshair() {
+// Pixel coordinates of the on-screen tracking crosshair within the map container.
+// Read from the actual rendered crosshair element so the detection lines up with
+// what the user sees — important on mobile where dynamic URL bars cause `100vh`
+// (used in CSS) and `window.innerHeight` (used by Leaflet) to drift apart.
+function getCrosshairPixel() {
   const sz = map.getSize();
-  let cx = sz.x / 2, cy = sz.y / 2;
-  if (document.body.classList.contains('tracking-portrait'))  cy = sz.y * 3 / 4;
-  if (document.body.classList.contains('tracking-landscape')) cx = sz.x * 3 / 4;
+  const ch = document.getElementById('crosshair');
+  if (ch && !ch.classList.contains('hidden')) {
+    const r = ch.getBoundingClientRect();
+    if (r.width > 0) return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  return { x: sz.x / 2, y: sz.y / 2 };
+}
+
+// A POI qualifies for the tracking panel if any of:
+//   1. Its location is within 40 m (ground) of the crosshair.
+//   2. The crosshair pixel lies within its marker icon on screen.
+//   3. The crosshair pixel lies within the cluster icon that currently
+//      represents it (for zoom levels where multiple POIs merge into a
+//      cluster much larger than 40 m on the ground).
+// Among qualifying POIs, return the one whose lat/lng is closest to the
+// crosshair.
+function getPoiAtCrosshair() {
+  const { x: cx, y: cy } = getCrosshairPixel();
   const crosshair = map.containerPointToLatLng([cx, cy]);
-  const THRESHOLD_METERS = 20;
-  let closest = null, minDist = THRESHOLD_METERS;
+  const THRESHOLD_METERS = 40;
+  let bestPoi = null, bestDist = Infinity;
   for (const poi of Object.values(pois)) {
     if (shouldHidePoi(poi)) continue;
-    const d = map.distance(crosshair, [poi.lat, poi.lng]);
-    if (d < minDist) { minDist = d; closest = poi; }
+    const groundDist = map.distance(crosshair, [poi.lat, poi.lng]);
+    let qualifies = groundDist < THRESHOLD_METERS;
+    if (!qualifies) {
+      // Don't gate on `_icon` (the rendered DOM element). MarkerCluster's
+      // `removeOutsideVisibleBounds` prunes elements at the viewport edge,
+      // making `_icon` flicker null even for unclustered visible POIs. The
+      // overlap test only needs the latlng → pixel position, which is
+      // available regardless.
+      const marker = markers[poi.id];
+      if (marker) {
+        const parent = clusterGroup.getVisibleParent(marker) || marker;
+        const parentPx = map.latLngToContainerPoint(parent.getLatLng());
+        // iconSize may be an array (our POI markers) or an L.Point
+        // (cluster markers); L.point() normalises both to a Point.
+        const sz = L.point(parent.options.icon?.options?.iconSize || [40, 40]);
+        const radius = Math.max(sz.x, sz.y) / 2;
+        if (Math.hypot(parentPx.x - cx, parentPx.y - cy) <= radius) qualifies = true;
+      }
+    }
+    if (qualifies && groundDist < bestDist) {
+      bestDist = groundDist;
+      bestPoi = poi;
+    }
   }
-  return closest;
+  return bestPoi;
 }
 
 function updateTrackingDisplay() {
@@ -2090,11 +2132,55 @@ function updateTrackingDisplay() {
   }
 }
 
+// ── Live tracking (pan map to follow user's GPS location) ────────────────────
+let liveTrackWatchId = null;
+
+function panMapToUserLocation(lat, lng) {
+  const { x: cx, y: cy } = getCrosshairPixel();
+  const userPx = map.latLngToContainerPoint([lat, lng]);
+  // Pan the map so the user's location lands at the crosshair pixel.
+  map.panBy([userPx.x - cx, userPx.y - cy], { animate: true, duration: 0.4 });
+}
+
+function setLiveTracking(on) {
+  if (on === (liveTrackWatchId !== null)) return;
+  if (on) {
+    if (!navigator.geolocation) return;
+    liveTrackWatchId = navigator.geolocation.watchPosition(
+      (pos) => panMapToUserLocation(pos.coords.latitude, pos.coords.longitude),
+      (err) => { console.warn('Geolocation error:', err); setLiveTracking(false); },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
+    );
+    $('btn-live-track').classList.add('active');
+  } else {
+    if (liveTrackWatchId !== null) {
+      navigator.geolocation.clearWatch(liveTrackWatchId);
+      liveTrackWatchId = null;
+    }
+    $('btn-live-track').classList.remove('active');
+  }
+}
+
+function updateLiveTrackBtn() {
+  const show = trackingMode && !editMode && !!navigator.geolocation;
+  $('btn-live-track').classList.toggle('hidden', !show);
+  if (!show) setLiveTracking(false);
+}
+
+$('btn-live-track').addEventListener('click', () => setLiveTracking(liveTrackWatchId === null));
+
+// User-initiated drag turns live tracking off; programmatic panBy doesn't fire dragstart.
+map.on('dragstart', () => { if (liveTrackWatchId !== null) setLiveTracking(false); });
+
 function renderTrackingPanel(poi) {
   $('tracking-empty').classList.add('hidden');
   $('tracking-content').classList.remove('hidden');
   $('tracking-panel').classList.remove('hidden');
-  trackingViewer.open(lightboxPhotosFor(poi), 0);
+  const photos = lightboxPhotosFor(poi);
+  const hasPhotos = photos.length > 0;
+  $('tracking-photo-wrap').classList.toggle('hidden', !hasPhotos);
+  if (hasPhotos) trackingViewer.open(photos, 0);
+  else trackingViewer.close();
   $('tracking-title').textContent = poi.title || '';
   $('tracking-note').textContent = poi.note || '';
   $('tracking-info').classList.toggle('hidden', !poi.title && !poi.note);
@@ -2245,7 +2331,7 @@ document.addEventListener('click', () => {
 // ── Init ──────────────────────────────────────────────────────────────────────
 initLayerSwitcher();
 initDirPref();
-if (window.innerWidth <= 768) setTrackingMode(true);
+if (Math.min(window.innerWidth, window.innerHeight) <= 768) setTrackingMode(true);
 (async () => {
   await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
   const overlay = document.getElementById('loading-overlay');
