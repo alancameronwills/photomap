@@ -1954,11 +1954,47 @@ function renderTrackingPanel(poi) {
   $('tracking-info').classList.toggle('hidden', !poi.title && !poi.note);
 }
 
+function refreshTrackingMarkerOverlay(ph) {
+  const overlay = $('tracking-marker-overlay');
+  overlay.innerHTML = '';
+  if (!ph || ph.marker_x == null || ph.marker_y == null) return;
+  const img = $('tracking-photo');
+  if (!img.naturalWidth || !img.naturalHeight) return;
+  // object-fit: contain leaves letterbox bars — compute the actual image content rect
+  const cw = img.offsetWidth, ch = img.offsetHeight;
+  const scale = Math.min(cw / img.naturalWidth, ch / img.naturalHeight);
+  const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
+  overlay.style.left   = ((cw - dw) / 2) + 'px';
+  overlay.style.top    = ((ch - dh) / 2) + 'px';
+  overlay.style.width  = dw + 'px';
+  overlay.style.height = dh + 'px';
+  const cfg = MARKER_CONFIGS[ph.marker_rotation ?? 0] || MARKER_CONFIGS[0];
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', '30'); svg.setAttribute('height', '30');
+  svg.setAttribute('viewBox', '0 0 30 30');
+  svg.classList.add('photo-marker-pin');
+  svg.style.left = `${ph.marker_x * 100}%`;
+  svg.style.top  = `${ph.marker_y * 100}%`;
+  svg.style.transform = cfg.transform;
+  const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  poly.setAttribute('points', cfg.points);
+  poly.setAttribute('fill', '#ef4444');
+  poly.setAttribute('stroke', '#000');
+  poly.setAttribute('stroke-width', '2');
+  poly.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(poly);
+  overlay.appendChild(svg);
+}
+
 function updateTrackingPhoto() {
   const ph = trackingPhotos[trackingPhotoIdx];
   if (!ph) { $('tracking-photo-wrap').classList.add('hidden'); return; }
-  $('tracking-photo').src = ph.url || `/uploads/originals/${ph.filename}`;
   $('tracking-photo-wrap').classList.remove('hidden');
+  const img = $('tracking-photo');
+  // Set up marker render after image loads (handles both cached and uncached)
+  img.onload = () => refreshTrackingMarkerOverlay(ph);
+  img.src = ph.url || `/uploads/originals/${ph.filename}`;
+  if (img.complete && img.naturalWidth > 0) { img.onload = null; refreshTrackingMarkerOverlay(ph); }
   const dl = $('tracking-dir-label');
   if (ph.direction) {
     dl.textContent = `Direction: ${getDirName(ph.direction)}`;
@@ -1976,6 +2012,7 @@ function clearTrackingPanel() {
   trackingPhotos = [];
   trackingPhotoIdx = 0;
   $('tracking-photo').src = '';
+  $('tracking-marker-overlay').innerHTML = '';
   $('tracking-empty').classList.remove('hidden');
   $('tracking-content').classList.add('hidden');
 }

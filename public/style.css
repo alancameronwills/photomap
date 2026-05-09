@@ -925,6 +925,13 @@ body.tracking-landscape #tracking-panel {
   display: block;
 }
 
+#tracking-marker-overlay {
+  position: absolute;
+  pointer-events: none;
+  overflow: visible;
+  /* left/top/width/height computed in JS to match the letterboxed image content */
+}
+
 #tracking-dir-label {
   position: absolute;
   top: 6px; left: 6px;
