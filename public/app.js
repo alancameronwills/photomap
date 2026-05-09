@@ -390,16 +390,15 @@ function setEditMode(on) {
     }
   }
 
-  // Tracking mode: collapse split while editing, restore when done
+  // Tracking mode: hide panel while editing, restore orientation and display when done
   if (trackingMode) {
-    $('tracking-panel').classList.toggle('hidden', on);
     if (on) {
+      clearTrackingPanel();
       document.body.classList.remove('tracking-portrait', 'tracking-landscape');
     } else {
       updateTrackingLayout();
       updateTrackingDisplay();
     }
-    map.invalidateSize();
   }
 }
 
@@ -1897,13 +1896,11 @@ function setTrackingMode(on) {
   $('btn-tracking').classList.toggle('active', on);
   $('crosshair').classList.toggle('hidden', !on);
   if (on && !editMode) {
-    $('tracking-panel').classList.remove('hidden');
     updateTrackingLayout();
     updateTrackingDisplay();
   } else {
     $('tracking-panel').classList.add('hidden');
     document.body.classList.remove('tracking-portrait', 'tracking-landscape');
-    map.invalidateSize();
   }
 }
 
@@ -1912,12 +1909,13 @@ function updateTrackingLayout() {
   const portrait = window.innerHeight > window.innerWidth;
   document.body.classList.toggle('tracking-portrait', portrait);
   document.body.classList.toggle('tracking-landscape', !portrait);
-  map.invalidateSize();
 }
 
 function getPoiAtCrosshair() {
   const sz = map.getSize();
-  const cx = sz.x / 2, cy = sz.y / 2;
+  let cx = sz.x / 2, cy = sz.y / 2;
+  if (document.body.classList.contains('tracking-portrait'))  cy = sz.y * 3 / 4;
+  if (document.body.classList.contains('tracking-landscape')) cx = sz.x * 3 / 4;
   const THRESHOLD = 40;
   let closest = null, minDist = THRESHOLD;
   for (const poi of Object.values(pois)) {
@@ -1948,6 +1946,7 @@ function renderTrackingPanel(poi) {
   trackingPhotoIdx = 0;
   $('tracking-empty').classList.add('hidden');
   $('tracking-content').classList.remove('hidden');
+  $('tracking-panel').classList.remove('hidden');
   updateTrackingPhoto();
   $('tracking-title').textContent = poi.title || '';
   $('tracking-note').textContent = poi.note || '';
@@ -2013,8 +2012,7 @@ function clearTrackingPanel() {
   trackingPhotoIdx = 0;
   $('tracking-photo').src = '';
   $('tracking-marker-overlay').innerHTML = '';
-  $('tracking-empty').classList.remove('hidden');
-  $('tracking-content').classList.add('hidden');
+  $('tracking-panel').classList.add('hidden');
 }
 
 // ── Direction preference ──────────────────────────────────────────────────────

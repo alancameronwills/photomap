@@ -867,15 +867,6 @@ body, html {
 
 /* ── Tracking mode ── */
 
-body.tracking-portrait #map {
-  top: calc(52px + (100vh - 52px) / 2);
-  bottom: 0; left: 0; right: 0;
-}
-body.tracking-landscape #map {
-  top: 52px;
-  left: 50%; right: 0; bottom: 0;
-}
-
 #tracking-panel {
   position: fixed;
   z-index: 200;
@@ -888,9 +879,11 @@ body.tracking-landscape #map {
 body.tracking-portrait #tracking-panel {
   top: 52px; left: 0; right: 0;
   height: calc((100vh - 52px) / 2);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.7);
 }
 body.tracking-landscape #tracking-panel {
   top: 52px; left: 0; width: 50%; bottom: 0;
+  box-shadow: 6px 0 24px rgba(0,0,0,0.7);
 }
 
 .tracking-empty {
@@ -1011,6 +1004,9 @@ body.tracking-landscape #tracking-panel {
   z-index: 900;
   pointer-events: none;
 }
+/* In tracking mode the panel overlays one half, so offset crosshair to centre of the other half */
+body.tracking-portrait  #crosshair { top: 75%; }
+body.tracking-landscape #crosshair { left: 75%; }
 #crosshair::before, #crosshair::after {
   content: '';
   position: absolute;
