@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 164 274">
+  <!-- phone shell -->
+  <rect x="0" y="0" width="164" height="274" rx="26" fill="#1e293b"/>
+  <!-- screen -->
+  <rect x="12" y="18" width="140" height="240" rx="14" fill="#dbeafe"/>
+  <!-- home bar -->
+  <rect x="58" y="262" width="48" height="5" rx="2.5" fill="#334155"/>
+  <!-- pin: circle head -->
+  <circle cx="82" cy="106" r="50" fill="#2563eb"/>
+  <!-- pin: sharp tail -->
+  <path d="M60,146 L82,214 L104,146 Z" fill="#2563eb"/>
+  <!-- pin: inner white dot -->
+  <circle cx="82" cy="106" r="24" fill="white"/>
+</svg>
