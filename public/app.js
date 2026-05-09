@@ -2065,12 +2065,12 @@ function getPoiAtCrosshair() {
   let cx = sz.x / 2, cy = sz.y / 2;
   if (document.body.classList.contains('tracking-portrait'))  cy = sz.y * 3 / 4;
   if (document.body.classList.contains('tracking-landscape')) cx = sz.x * 3 / 4;
-  const THRESHOLD = 40;
-  let closest = null, minDist = THRESHOLD;
+  const crosshair = map.containerPointToLatLng([cx, cy]);
+  const THRESHOLD_METERS = 20;
+  let closest = null, minDist = THRESHOLD_METERS;
   for (const poi of Object.values(pois)) {
     if (shouldHidePoi(poi)) continue;
-    const pt = map.latLngToContainerPoint([poi.lat, poi.lng]);
-    const d = Math.hypot(pt.x - cx, pt.y - cy);
+    const d = map.distance(crosshair, [poi.lat, poi.lng]);
     if (d < minDist) { minDist = d; closest = poi; }
   }
   return closest;
