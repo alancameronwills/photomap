@@ -1091,15 +1091,18 @@ bulkFileInput.addEventListener('change', () => {
   }
 });
 
-async function uploadPhotosToMap(files) {
+async function uploadPhotosToMap(files, gpsOverride) {
   const center = map.getCenter();
   showUploadToast('Processing photos…', 0);
 
-  // Extract GPS from originals before scaling strips EXIF, then scale
-  const [gpsMap, scaled] = await Promise.all([
-    extractGPSFromFiles(files),
-    Promise.all(files.map(f => scaleImageFile(f))),
-  ]);
+  // Extract GPS from originals before scaling strips EXIF, then scale.
+  // gpsOverride (e.g. from navigator.geolocation when shooting via the in-app
+  // camera button) wins for every file in the batch.
+  const scalePromise = Promise.all(files.map(f => scaleImageFile(f)));
+  const gpsPromise = gpsOverride
+    ? Promise.resolve(Object.fromEntries(files.map((_, i) => [i, gpsOverride])))
+    : extractGPSFromFiles(files);
+  const [gpsMap, scaled] = await Promise.all([gpsPromise, scalePromise]);
 
   // API Gateway has a 10 MB request limit, so send in batches of 10
   const BATCH = 10;
@@ -1134,6 +1137,13 @@ async function uploadPhotosToMap(files) {
     for (const poi of poiList) {
       pois[poi.id] = poi;
       addOrUpdateMarker(poi);
+    }
+
+    // If the currently-tracked POI just got new photos, restart its slideshow
+    // so the new photo appears in the rotation. Otherwise the trackingViewer
+    // would keep cycling through the old photo array.
+    if (trackingMode && trackingPoiId && allPois[trackingPoiId]) {
+      renderTrackingPanel(pois[trackingPoiId]);
     }
 
     if (poiList.length > 0) {
@@ -2050,11 +2060,16 @@ function setTrackingMode(on) {
   $('btn-tracking').classList.toggle('active', on);
   $('crosshair').classList.toggle('hidden', !on);
   if (on && !editMode) {
+    // Drop any cached "currently tracked" POI so the next updateTrackingDisplay
+    // doesn't short-circuit on `newId === trackingPoiId` when the crosshair is
+    // already over the same POI we showed last time tracking was on.
+    trackingPoiId = null;
     updateTrackingLayout();
     updateTrackingDisplay();
   } else {
     $('tracking-panel').classList.add('hidden');
     document.body.classList.remove('tracking-portrait', 'tracking-landscape');
+    trackingPoiId = null;
   }
   syncMobileMenu();
   updateLiveTrackBtn();
@@ -2200,6 +2215,58 @@ function updateLiveTrackBtn() {
 }
 
 $('btn-live-track').addEventListener('click', () => setLiveTracking(liveTrackWatchId === null));
+
+// ── Camera-photo button (tracking + signed in + has camera) ──────────────────
+let hasCamera = false;
+(async () => {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    // No mediaDevices API; assume a touch device probably has a camera.
+    hasCamera = 'ontouchstart' in window;
+  } else {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      hasCamera = devices.some(d => d.kind === 'videoinput');
+    } catch {
+      hasCamera = 'ontouchstart' in window;
+    }
+  }
+  updateCameraBtn();
+})();
+
+function updateCameraBtn() {
+  const show = trackingMode && authenticated && hasCamera && !!navigator.geolocation;
+  $('btn-camera-photo').classList.toggle('hidden', !show);
+}
+
+$('btn-camera-photo').addEventListener('click', () => $('camera-photo-input').click());
+
+$('camera-photo-input').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+
+  showUploadToast('Getting your location…', 5);
+  let lat, lng;
+  try {
+    const pos = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true, maximumAge: 5000, timeout: 15000,
+      });
+    });
+    lat = pos.coords.latitude;
+    lng = pos.coords.longitude;
+  } catch (err) {
+    hideUploadToast();
+    alert('Could not get your location — photo not added. Enable GPS / location services and try again.');
+    return;
+  }
+
+  // The bulk-upload endpoint groups uploaded photos by GPS proximity (10 m
+  // threshold) and either appends to the nearest existing POI or creates a
+  // new one. Passing the device's GPS as override gives us exactly that
+  // behaviour for a single freshly-shot photo.
+  await uploadPhotosToMap([file], { lat, lng });
+});
 
 // User-initiated drag turns live tracking off; programmatic panBy doesn't fire dragstart.
 map.on('dragstart', () => { if (liveTrackWatchId !== null) setLiveTracking(false); });
@@ -2351,6 +2418,8 @@ function syncMobileMenu() {
     mob.textContent = desk.textContent;
     mob.classList.toggle('active', desk.classList.contains('active'));
   }
+  // Camera button shares the same auth/tracking triggers as the mobile menu.
+  if (typeof updateCameraBtn === 'function') updateCameraBtn();
 }
 
 $('btn-mobile-menu').addEventListener('click', (e) => {

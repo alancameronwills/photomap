@@ -135,7 +135,15 @@ Among qualifying POIs the one with the smallest ground distance wins. The icon-o
 
 **Live GPS tracking.** `#btn-live-track` (target icon, `position: fixed; right: 12px; bottom: 25vh`) is shown only in tracking mode + view mode + when `navigator.geolocation` is available (`updateLiveTrackBtn()`). Clicking it calls `navigator.geolocation.watchPosition`; each fix calls `panMapToUserLocation(lat, lng)` which `map.panBy`s the offset between the user's pixel and the crosshair pixel. A user-initiated `dragstart` turns it off (programmatic `panBy` does not fire `dragstart`).
 
+**Camera button.** `#btn-camera-photo` (camera icon, sits ~56 px below the live-track button on the right edge) appears only when `trackingMode && authenticated && hasCamera && navigator.geolocation`. `hasCamera` is determined once at startup via `navigator.mediaDevices.enumerateDevices()` (falling back to `'ontouchstart' in window` if the API isn't available). Visibility is refreshed inside `syncMobileMenu()` so it tracks auth + tracking state changes. Clicking opens a hidden `<input type="file" accept="image/*" capture="environment">` (back camera). On `change`, `navigator.geolocation.getCurrentPosition` provides the lat/lng and `uploadPhotosToMap([file], { lat, lng })` posts the photo to the bulk endpoint with the GPS as override; the server then groups it (10 m threshold) into the nearest existing POI or creates a new one.
+
+**`uploadPhotosToMap(files, gpsOverride?)`** has an optional `gpsOverride` parameter. When supplied, every file in the batch is uploaded with that lat/lng instead of EXIF-extracted GPS — used by the camera-button path because freshly-shot Android photos often have their EXIF GPS stripped before the page sees them.
+
 **No-photos POI.** `renderTrackingPanel(poi)` hides `#tracking-photo-wrap` when `lightboxPhotosFor(poi)` is empty so the empty `<img>` doesn't render as a broken-image icon — only title and note are shown.
+
+**Re-detection on retoggle / upload.** `setTrackingMode` resets `trackingPoiId` to `null` whenever it switches state, so toggling tracking off and back on with the crosshair still over the same POI re-renders the panel (otherwise the `if (newId === trackingPoiId) return;` guard in `updateTrackingDisplay` would skip it). After `uploadPhotosToMap` finishes, if the upload touched the currently-tracked POI, `renderTrackingPanel(pois[trackingPoiId])` is called so the slideshow restarts and the new photo enters the rotation.
+
+**Onboarding cue.** On the off→on transition (and only when not in edit mode), `showCrosshairHint()` is scheduled with a 50 ms delay — long enough for layout to settle. It pulses the crosshair red four times via a CSS animation on `#crosshair.flash::before/::after` (~1.6 s total) and pops a `#crosshair-tip` ("move points here to see details") just above the crosshair for ~3.5 s, positioned via `getBoundingClientRect`. The crosshair is hidden whenever edit mode is on; restored on edit-mode exit if tracking is still active.
 
 #### Bottom indicators
 
@@ -144,6 +152,18 @@ Only one of `#edit-indicator` (orange "Edit Mode" banner) and `#route-edit-indic
 #### Map click suppression after colour picker
 
 On mobile, dismissing the native colour picker by tapping outside it lets the tap fall through to the Leaflet map. `routeColorInput.addEventListener('click', ...)` arms a `suppressNextMapClick` flag whenever the picker is invoked (directly or via `routeColorInput.click()` from the menu); the next `map.on('click')` event consumes the flag and returns early. The flag is cleared by the input's `input` event so a real colour selection doesn't leave it stale.
+
+#### Help / welcome modal
+
+`HELP_CONTENT.welcome()` and `HELP_CONTENT.edit()` return HTML strings; the welcome variant branches on `trackingMode` (rather than screen size) to pick the mobile-flavoured guide vs the desktop one — so the visible state of the Track button stays in sync with what the help describes. `showHelp(key)` populates `#help-overlay`, `maybeShowHelp(key)` only triggers when the matching `localStorage.helpSeen_<key>` flag is unset (and sets it). Welcome auto-opens once after the loading overlay clears; edit auto-opens once on the first call to `setEditMode(true)`. The toolbar `?` button (mirrored as a "Help" item in `#mobile-menu`) always shows the welcome variant.
+
+#### OAuth → edit-mode handoff
+
+When the user clicks Edit while not authenticated, the login overlay opens *and* `localStorage.editAfterAuth` is set. After an OAuth round-trip lands them back at the app, the post-load handler checks `authenticated && localStorage.editAfterAuth` and, if both, calls `setEditMode(true)` and clears the flag. The flag is also cleared on cancel / outside-click of the login modal and on a successful password login (which already enters edit mode directly), so a later OAuth login from the welcome screen alone doesn't unexpectedly switch to edit mode.
+
+#### URL-bar collapsing on mobile
+
+PWA-ish meta tags (`apple-mobile-web-app-capable`, `mobile-web-app-capable`, `theme-color`, `viewport-fit=cover`) make "Add to Home Screen" launch in standalone mode. As a best-effort fallback while in-browser, the init block does a one-pixel `window.scrollTo(0, 1)` after temporarily setting `documentElement.style.minHeight = 'calc(100% + 1px)'`; this nudges some Android Chrome versions into auto-collapsing the URL bar. iOS Safari and current Chrome still require user-initiated scrolling, but the trick is harmless when ineffective.
 
 #### Route editing
 

@@ -267,6 +267,15 @@
 <!-- Layer switcher -->
 <div id="layer-switcher"></div>
 
+<!-- Take a photo with the device camera and place it on the map (tracking + signed in) -->
+<button id="btn-camera-photo" class="camera-btn hidden" title="Take photo and add here">
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+    <circle cx="12" cy="13" r="4"/>
+  </svg>
+</button>
+<input type="file" id="camera-photo-input" accept="image/*" capture="environment" style="display:none"/>
+
 <!-- Live tracking toggle (centre map on user's GPS location, only in tracking mode) -->
 <button id="btn-live-track" class="live-track-btn hidden" title="Centre on my location">
   <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

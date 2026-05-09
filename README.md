@@ -13,7 +13,9 @@ An interactive map for organising geotagged photos and hand-drawn routes. Photos
 - **Photo annotations** — each photo can have a caption, a direction tag (1 or 2), and a positioned arrow marker (↓ ← →) placed by clicking on the photo in the lightbox.
 - **Direction preference** — a toolbar control (All / 1 / 2) sorts preferred-direction photos first within each POI and hides POIs whose photos are all in the opposite direction. When the current route names its directions, the buttons read "To: \<name\>" instead of "1" / "2".
 - **Tracking mode** — split-screen photo panel that auto-advances through the photos of whichever POI the map crosshair lands on (within ~40 m, or any POI/cluster icon the crosshair sits over); pause/play, prev/next, and direction-aware filtering all in the panel. On phones, a target button (right edge, 25 vh from the bottom) toggles "live tracking": the map follows the device's GPS so your real location stays under the crosshair.
-- **Mobile-friendly UI** — at narrow widths the toolbar wraps and the action buttons collapse into a kebab dropdown; the route-editing bar uses its own dropdown that opens upward.
+- **One-tap photo capture** — when signed in on a phone with tracking on, a camera button takes a photo and adds it to whichever POI is at your current location (within ~10 m), or creates a new POI if there isn't one. Useful when you arrive at a place you want to record.
+- **Mobile-friendly UI** — at narrow widths the toolbar wraps and the action buttons collapse into a kebab dropdown; the route-editing bar uses its own dropdown that opens upward. "Add to Home Screen" launches the app in standalone mode without browser chrome.
+- **In-app help** — a `?` button in the toolbar (or "Help" in the mobile menu) opens a guide; first-time visitors and first-time editors see it automatically.
 
 ## Running locally
 
