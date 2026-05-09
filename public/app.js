@@ -115,6 +115,17 @@ function updateLayerButtons() {
   if (sel) sel.value = activeLayerName;
 }
 
+function switchLayer(name) {
+  const currently = displayedLayerName();
+  if (name === currently && name === activeLayerName) return;
+  map.removeLayer(TILE_LAYERS[currently]);
+  map.addLayer(TILE_LAYERS[name]);
+  activeLayerName = name;
+  aerialFallback = false;
+  updateLayerButtons();
+  handleZoomForLayer();
+}
+
 function handleZoomForLayer() {
   if (activeLayerName === 'Aerial (ESRI)') return; // aerial is the chosen layer; nothing to do
   const z = map.getZoom();
@@ -161,17 +172,7 @@ function initLayerSwitcher() {
     if (name === activeLayerName) opt.selected = true;
     select.appendChild(opt);
   });
-  select.addEventListener('change', () => {
-    const name = select.value;
-    const currently = displayedLayerName();
-    if (name === currently && name === activeLayerName) return;
-    map.removeLayer(TILE_LAYERS[currently]);
-    map.addLayer(TILE_LAYERS[name]);
-    activeLayerName = name;
-    aerialFallback = false;
-    updateLayerButtons();
-    handleZoomForLayer();
-  });
+  select.addEventListener('change', () => switchLayer(select.value));
   container.appendChild(select);
 
   // Buttons for large screens
@@ -181,16 +182,7 @@ function initLayerSwitcher() {
     btn.className = 'layer-btn' + (name === activeLayerName ? ' active' : '');
     btn.textContent = name;
     btn.title = name;
-    btn.addEventListener('click', () => {
-      const currently = displayedLayerName();
-      if (name === currently && name === activeLayerName) return;
-      map.removeLayer(TILE_LAYERS[currently]);
-      map.addLayer(TILE_LAYERS[name]);
-      activeLayerName = name;
-      aerialFallback = false;
-      updateLayerButtons();
-      handleZoomForLayer();
-    });
+    btn.addEventListener('click', () => switchLayer(name));
     container.appendChild(btn);
   });
 }
@@ -222,21 +214,14 @@ let activePoi = null;    // currently previewed/opened POI
 let newPoiLatLng = null; // temp latlng for new POI from map click
 let pendingNewFiles = []; // FileList accumulated for new POI dialog
 let pendingNodeForPoi = null; // route node waiting to be linked to a new POI
-let lightboxPhotos = [];        // full photo objects (may be sorted by direction pref)
-let lightboxIndex = 0;
 let lightboxEditPoiId = null;   // non-null when lightbox opened from edit dialog
-let currentMarkerPos = null;    // {x, y} fractions 0-1, or null — while edit lightbox open
-let lightboxAutoTimer = null;   // setInterval handle for tracking-mode auto-advance
-let lightboxPaused = false;
+let currentMarkerPos = null;    // {x, y, rotation} while edit lightbox open
 let directionPref = 0;          // 0 = all, 1 or 2 = show that direction first / hide opposite
 let currentRoute = null;        // Route whose direction names apply to the current view
 let previousPoiId = null;       // Most recently opened POI id (for route determination)
 let trackingMode = false;
 let trackingPoiId = null;
-let trackingPhotoIdx = 0;
-let trackingPhotos = [];
-let trackingAutoTimer = null;
-let trackingPaused = false;
+// lightboxViewer and trackingViewer — PhotoDisplay instances, created after DOM refs below
 
 function getDirName(dir) {
   if (dir === 1) return currentRoute?.dir1_name || '1';
@@ -328,6 +313,163 @@ const uploadFill     = $('upload-progress-fill');
 const lightbox       = $('lightbox');
 const lightboxImg    = $('lightbox-img');
 
+// ── Shared photo-display logic ────────────────────────────────────────────────
+
+// Renders a marker SVG into overlayEl, positioned to sit exactly over the
+// image content (compensates for object-fit:contain letterboxing).
+function renderMarker(overlayEl, imgEl, ph) {
+  overlayEl.innerHTML = '';
+  if (!ph || ph.marker_x == null || ph.marker_y == null) return;
+  const cw = imgEl.offsetWidth, ch = imgEl.offsetHeight;
+  let ox = 0, oy = 0, ow = cw, oh = ch;
+  if (imgEl.naturalWidth && imgEl.naturalHeight) {
+    const scale = Math.min(cw / imgEl.naturalWidth, ch / imgEl.naturalHeight);
+    ow = imgEl.naturalWidth * scale; oh = imgEl.naturalHeight * scale;
+    ox = (cw - ow) / 2; oy = (ch - oh) / 2;
+  }
+  Object.assign(overlayEl.style, { left: ox+'px', top: oy+'px', width: ow+'px', height: oh+'px' });
+  const cfg = MARKER_CONFIGS[ph.marker_rotation ?? 0] || MARKER_CONFIGS[0];
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', '30'); svg.setAttribute('height', '30');
+  svg.setAttribute('viewBox', '0 0 30 30');
+  svg.classList.add('photo-marker-pin');
+  svg.style.left = `${ph.marker_x * 100}%`; svg.style.top = `${ph.marker_y * 100}%`;
+  svg.style.transform = cfg.transform;
+  const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  poly.setAttribute('points', cfg.points);   poly.setAttribute('fill', '#ef4444');
+  poly.setAttribute('stroke', '#000');        poly.setAttribute('stroke-width', '2');
+  poly.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(poly); overlayEl.appendChild(svg);
+}
+
+// Factory: manages one photo-display context (image, marker, caption, direction
+// label, prev/next/pause controls, auto-advance timer).
+//   onBeforeNav — called before index changes (e.g. stash edit state)
+//   onAfterNav  — called after index changes (e.g. update edit panel)
+function createPhotoDisplay({ imgEl, overlayEl, captionEl, dirLabelEl,
+                               prevBtn, nextBtn, pauseBtn,
+                               onBeforeNav, onAfterNav }) {
+  let photos = [], idx = 0, paused = false, timer = null;
+
+  function renderPhoto() {
+    const ph = photos[idx];
+    if (!ph) { imgEl.src = ''; overlayEl.innerHTML = ''; return; }
+    const src = ph.url || `/uploads/originals/${ph.filename}`;
+    imgEl.onload = null;
+    if (imgEl.src !== src) {
+      imgEl.src = src;
+      imgEl.onload = () => renderMarker(overlayEl, imgEl, ph);
+    } else if (imgEl.complete && imgEl.naturalWidth) {
+      renderMarker(overlayEl, imgEl, ph);
+    } else {
+      imgEl.onload = () => renderMarker(overlayEl, imgEl, ph);
+    }
+    if (dirLabelEl) {
+      if (ph.direction) { dirLabelEl.textContent = `Direction: ${getDirName(ph.direction)}`; dirLabelEl.classList.remove('hidden'); }
+      else dirLabelEl.classList.add('hidden');
+    }
+    if (captionEl) captionEl.textContent = ph.caption || '';
+    updateDirPrefButtons();
+  }
+
+  function startAuto() {
+    stopAuto();
+    if (paused || photos.length <= 1) return;
+    timer = setInterval(() => { idx = (idx + 1) % photos.length; renderPhoto(); }, 4000);
+  }
+  function stopAuto() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  function syncControls() {
+    const multi = photos.length > 1;
+    prevBtn?.classList.toggle('hidden', !multi);
+    nextBtn?.classList.toggle('hidden', !multi);
+    const showPause = trackingMode && multi;
+    if (pauseBtn) {
+      pauseBtn.classList.toggle('hidden', !showPause);
+      if (showPause) { pauseBtn.innerHTML = paused ? '&#9654;' : '&#9208;'; pauseBtn.title = paused ? 'Play' : 'Pause'; }
+    }
+  }
+
+  function nav(dir, manual = false) {
+    if (!photos.length) return;
+    onBeforeNav?.();
+    idx = (idx + dir + photos.length) % photos.length;
+    renderPhoto();
+    onAfterNav?.();
+    if (manual && timer) startAuto();  // restart timer so this photo gets a full 4s
+  }
+
+  function open(newPhotos, startIdx = 0, autoAdvance = true) {
+    photos = newPhotos;
+    idx = Math.max(0, Math.min(startIdx, Math.max(0, photos.length - 1)));
+    paused = false;
+    stopAuto();
+    renderPhoto();
+    syncControls();
+    if (autoAdvance && trackingMode && photos.length > 1) startAuto();
+  }
+
+  function close() {
+    stopAuto();
+    imgEl.src = ''; imgEl.onload = null;
+    overlayEl.innerHTML = '';
+    pauseBtn?.classList.add('hidden');
+    if (captionEl) captionEl.textContent = '';
+    if (dirLabelEl) dirLabelEl.classList.add('hidden');
+  }
+
+  prevBtn?.addEventListener('click',  (e) => { e.stopPropagation(); nav(-1, true); });
+  nextBtn?.addEventListener('click',  (e) => { e.stopPropagation(); nav(1,  true); });
+  pauseBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    paused = !paused;
+    syncControls();
+    if (paused) stopAuto(); else startAuto();
+  });
+
+  return {
+    open, close,
+    nav,           // manual nav (for keyboard shortcuts etc.)
+    rerender: renderPhoto,
+    stopAuto,
+    get photos() { return photos; },
+    get index()  { return idx; },
+    set index(i) { idx = i; },
+  };
+}
+
+// Lightbox viewer — edit-mode callbacks handle stashing/restoring pending edits
+const lightboxViewer = createPhotoDisplay({
+  imgEl:     $('lightbox-img'),
+  overlayEl: $('lightbox-marker-overlay'),
+  captionEl: $('lightbox-caption'),
+  dirLabelEl:$('lightbox-direction-label'),
+  prevBtn:   $('lightbox-prev'),
+  nextBtn:   $('lightbox-next'),
+  pauseBtn:  $('lightbox-pause'),
+  onBeforeNav: () => stashCurrentLightboxPhotoEdit(),
+  onAfterNav:  () => {
+    if (lightboxEditPoiId) {
+      $('lightbox-caption').textContent = '';
+      $('lightbox-direction-label').classList.add('hidden');
+      updateEditLightboxPanel();
+    }
+  },
+});
+
+// Tracking-panel viewer — view-mode only, no edit callbacks needed
+const trackingViewer = createPhotoDisplay({
+  imgEl:     $('tracking-photo'),
+  overlayEl: $('tracking-marker-overlay'),
+  captionEl: $('tracking-caption'),
+  dirLabelEl:$('tracking-dir-label'),
+  prevBtn:   $('tracking-prev'),
+  nextBtn:   $('tracking-next'),
+  pauseBtn:  $('tracking-pause'),
+});
+
 // ── API helpers ──────────────────────────────────────────────────────────────
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -352,6 +494,7 @@ async function checkAuth() {
   if (authenticated) {
     btnLogout.classList.remove('hidden');
   }
+  syncMobileMenu();
 }
 
 async function login(password) {
@@ -370,6 +513,7 @@ async function logout() {
   setEditMode(false);
   btnEditMode.classList.remove('active');
   btnLogout.classList.add('hidden');
+  syncMobileMenu();
 }
 
 // ── Edit mode ────────────────────────────────────────────────────────────────
@@ -379,7 +523,7 @@ function setEditMode(on) {
   editIndicator.classList.toggle('hidden', !on);
   $('btn-bulk-upload').classList.toggle('hidden', !on);
   $('btn-enter-route-edit').classList.toggle('hidden', !on);
-  btnEditMode.textContent = on ? 'Done Editing' : 'Edit Mode';
+  btnEditMode.textContent = on ? 'Done' : 'Edit';
   btnEditMode.classList.toggle('active', on);
   document.getElementById('map').classList.toggle('edit-active', on);
 
@@ -430,6 +574,7 @@ function setEditMode(on) {
       updateTrackingDisplay();
     }
   }
+  syncMobileMenu();
 }
 
 // ── Marker creation ──────────────────────────────────────────────────────────
@@ -621,81 +766,29 @@ function lightboxPhotosFor(poi) {
   return photos;
 }
 
-function startLightboxAutoAdvance() {
-  stopLightboxAutoAdvance();
-  if (!trackingMode || lightboxPaused || lightboxPhotos.length <= 1) return;
-  lightboxAutoTimer = setInterval(() => {
-    lightboxIndex = (lightboxIndex + 1) % lightboxPhotos.length;
-    updateLightboxImage();
-  }, 4000);
-}
-
-function stopLightboxAutoAdvance() {
-  if (lightboxAutoTimer) { clearInterval(lightboxAutoTimer); lightboxAutoTimer = null; }
-}
-
-function updateLightboxPauseBtn() {
-  const btn = $('lightbox-pause');
-  btn.innerHTML = lightboxPaused ? '&#9654;' : '&#9208;';
-  btn.title = lightboxPaused ? 'Play' : 'Pause';
-}
-
 function openLightbox(poi, startIdx) {
   updateCurrentRouteForPoi(poi);
-  lightboxPhotos = lightboxPhotosFor(poi);
   lightboxEditPoiId = null;
-  lightboxPaused = false;
-  // Map original index → filtered+sorted index so the clicked photo opens first
-  const originalPhoto = poi.photos[startIdx];
-  if (originalPhoto) {
-    const si = lightboxPhotos.findIndex(p => p.id === originalPhoto.id);
-    lightboxIndex = si >= 0 ? si : 0;
-  } else {
-    lightboxIndex = 0;
-  }
+  const photos = lightboxPhotosFor(poi);
+  const origPhoto = poi.photos[startIdx];
+  const si = origPhoto ? photos.findIndex(p => p.id === origPhoto.id) : 0;
   $('lightbox-edit-panel').classList.add('hidden');
   $('lightbox-marker-overlay').classList.remove('edit-active');
-  updateLightboxImage();
-  const multi = lightboxPhotos.length > 1;
-  $('lightbox-prev').classList.toggle('hidden', !multi);
-  $('lightbox-next').classList.toggle('hidden', !multi);
-  const showPause = trackingMode && multi;
-  $('lightbox-pause').classList.toggle('hidden', !showPause);
-  if (showPause) { updateLightboxPauseBtn(); startLightboxAutoAdvance(); }
+  lightboxViewer.open(photos, si >= 0 ? si : 0);
   lightbox.classList.remove('hidden');
 }
 
 function openEditLightbox(poiId, photoIdx) {
   const poi = pois[poiId];
-  if (!poi || !poi.photos || !poi.photos.length) return;
-  lightboxPhotos = poi.photos;    // original order in edit mode
-  lightboxIndex = photoIdx;
+  if (!poi || !poi.photos?.length) return;
   lightboxEditPoiId = poiId;
-  $('lightbox-caption').textContent = '';
   $('lightbox-edit-panel').classList.remove('hidden');
   $('lightbox-marker-overlay').classList.add('edit-active');
-  updateLightboxImage();
+  lightboxViewer.open(poi.photos, photoIdx, false);   // no auto-advance while editing
+  $('lightbox-caption').textContent = '';
+  $('lightbox-direction-label').classList.add('hidden');
   updateEditLightboxPanel();
-  const multi = lightboxPhotos.length > 1;
-  $('lightbox-prev').classList.toggle('hidden', !multi);
-  $('lightbox-next').classList.toggle('hidden', !multi);
   lightbox.classList.remove('hidden');
-}
-
-function updateLightboxImage() {
-  const ph = lightboxPhotos[lightboxIndex];
-  lightboxImg.src = ph ? (ph.url || `/uploads/originals/${ph.filename}`) : '';
-  if (!lightboxEditPoiId) {
-    $('lightbox-caption').textContent = ph?.caption || '';
-    updateLightboxMarker(ph?.marker_x ?? null, ph?.marker_y ?? null, ph?.marker_rotation ?? 0);
-    const dirLabel = $('lightbox-direction-label');
-    if (ph?.direction) {
-      dirLabel.textContent = `Direction: ${getDirName(ph.direction)}`;
-      dirLabel.classList.remove('hidden');
-    } else {
-      dirLabel.classList.add('hidden');
-    }
-  }
 }
 
 // Marker configs: points + CSS transform so the arrow tip lands at (left%, top%).
@@ -706,31 +799,8 @@ const MARKER_CONFIGS = {
   2: { points: '1,10 1,20 15,20 15,29 29,15 15,1 15,10',  transform: 'translate(-100%,-50%)' },
 };
 
-function updateLightboxMarker(x, y, rotation = 0) {
-  const overlay = $('lightbox-marker-overlay');
-  overlay.innerHTML = '';
-  if (x == null || y == null) return;
-  const cfg = MARKER_CONFIGS[rotation ?? 0] || MARKER_CONFIGS[0];
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('width',   '30');
-  svg.setAttribute('height',  '30');
-  svg.setAttribute('viewBox', '0 0 30 30');
-  svg.classList.add('photo-marker-pin');
-  svg.style.left      = `${x * 100}%`;
-  svg.style.top       = `${y * 100}%`;
-  svg.style.transform = cfg.transform;
-  const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-  poly.setAttribute('points',          cfg.points);
-  poly.setAttribute('fill',            '#ef4444');
-  poly.setAttribute('stroke',          '#000');
-  poly.setAttribute('stroke-width',    '2');
-  poly.setAttribute('stroke-linejoin', 'round');
-  svg.appendChild(poly);
-  overlay.appendChild(svg);
-}
-
 function updateEditLightboxPanel() {
-  const ph = lightboxPhotos[lightboxIndex];
+  const ph = lightboxViewer.photos[lightboxViewer.index];
   if (!ph) return;
   const pending = pendingPhotoEdits[ph.id];
   $('lightbox-caption-input').value = (pending !== undefined ? pending.caption : ph.caption) || '';
@@ -739,19 +809,19 @@ function updateEditLightboxPanel() {
     const btnDir = btn.dataset.dir ? Number(btn.dataset.dir) : null;
     btn.classList.toggle('active', btnDir === dir);
   });
-  const mx  = pending !== undefined ? pending.markerX        : (ph.marker_x        ?? null);
-  const my  = pending !== undefined ? pending.markerY        : (ph.marker_y        ?? null);
+  const mx  = pending !== undefined ? pending.markerX            : (ph.marker_x        ?? null);
+  const my  = pending !== undefined ? pending.markerY            : (ph.marker_y        ?? null);
   const rot = pending !== undefined ? (pending.markerRotation ?? 0) : (ph.marker_rotation ?? 0);
   currentMarkerPos = (mx != null && my != null) ? { x: mx, y: my, rotation: rot } : null;
   document.querySelectorAll('#lightbox-edit-panel .marker-rot-btn').forEach(btn => {
     btn.classList.toggle('active', Number(btn.dataset.rot) === rot);
   });
-  updateLightboxMarker(mx, my, rot);
+  renderMarker($('lightbox-marker-overlay'), lightboxImg, mx != null ? { marker_x: mx, marker_y: my, marker_rotation: rot } : null);
 }
 
 function stashCurrentLightboxPhotoEdit() {
   if (!lightboxEditPoiId) return;
-  const ph = lightboxPhotos[lightboxIndex];
+  const ph = lightboxViewer.photos[lightboxViewer.index];
   if (!ph) return;
   const caption = $('lightbox-caption-input').value.trim();
   const activeBtn = document.querySelector('#lightbox-edit-panel .dir-btn.active');
@@ -771,30 +841,19 @@ function stashCurrentLightboxPhotoEdit() {
 }
 
 function closeLightbox() {
-  stopLightboxAutoAdvance();
-  $('lightbox-pause').classList.add('hidden');
   stashCurrentLightboxPhotoEdit();
-  lightbox.classList.add('hidden');
-  lightboxImg.src = '';
   const wasEditing = lightboxEditPoiId;
   lightboxEditPoiId = null;
   currentMarkerPos = null;
+  lightboxViewer.close();
   $('lightbox-edit-panel').classList.add('hidden');
   $('lightbox-marker-overlay').classList.remove('edit-active');
-  $('lightbox-marker-overlay').innerHTML = '';
-  $('lightbox-caption').textContent = '';
-  $('lightbox-direction-label').classList.add('hidden');
-  // Refresh direction badges in the edit list
+  lightbox.classList.add('hidden');
   if (wasEditing && pois[wasEditing]) renderEditPhotosList(pois[wasEditing]);
 }
 
 function lightboxNav(dir) {
-  stashCurrentLightboxPhotoEdit();
-  lightboxIndex = (lightboxIndex + dir + lightboxPhotos.length) % lightboxPhotos.length;
-  updateLightboxImage();
-  if (lightboxEditPoiId) updateEditLightboxPanel();
-  // Restart timer so the newly-selected photo gets a full 4s before auto-advancing
-  if (lightboxAutoTimer) startLightboxAutoAdvance();
+  lightboxViewer.nav(dir, !lightboxEditPoiId);
 }
 
 // ── Edit dialog ──────────────────────────────────────────────────────────────
@@ -1224,14 +1283,7 @@ lightbox.addEventListener('click', (e) => {
   // In view mode only, clicking the image also closes; in edit mode keep it open for editing
   if (e.target === lightboxImg && !lightboxEditPoiId) closeLightbox();
 });
-$('lightbox-prev').addEventListener('click',  (e) => { e.stopPropagation(); lightboxNav(-1); });
-$('lightbox-next').addEventListener('click',  (e) => { e.stopPropagation(); lightboxNav(1); });
-$('lightbox-pause').addEventListener('click', (e) => {
-  e.stopPropagation();
-  lightboxPaused = !lightboxPaused;
-  updateLightboxPauseBtn();
-  if (lightboxPaused) stopLightboxAutoAdvance(); else startLightboxAutoAdvance();
-});
+// lightbox-prev / lightbox-next / lightbox-pause are wired by lightboxViewer (createPhotoDisplay)
 
 // Lightbox edit panel — direction buttons and marker rotation buttons
 $('lightbox-edit-panel').addEventListener('click', (e) => {
@@ -1247,7 +1299,8 @@ $('lightbox-edit-panel').addEventListener('click', (e) => {
     rotBtn.classList.add('active');
     if (currentMarkerPos) {
       currentMarkerPos.rotation = Number(rotBtn.dataset.rot);
-      updateLightboxMarker(currentMarkerPos.x, currentMarkerPos.y, currentMarkerPos.rotation);
+      renderMarker($('lightbox-marker-overlay'), lightboxImg,
+        { marker_x: currentMarkerPos.x, marker_y: currentMarkerPos.y, marker_rotation: currentMarkerPos.rotation });
     }
   }
 });
@@ -1262,14 +1315,15 @@ $('lightbox-marker-overlay').addEventListener('click', (e) => {
   const rotBtn = document.querySelector('#lightbox-edit-panel .marker-rot-btn.active');
   const rotation = rotBtn ? Number(rotBtn.dataset.rot) : 0;
   currentMarkerPos = { x, y, rotation };
-  updateLightboxMarker(x, y, rotation);
+  renderMarker($('lightbox-marker-overlay'), lightboxImg,
+    { marker_x: x, marker_y: y, marker_rotation: rotation });
 });
 
 // Remove marker button
 $('lightbox-remove-marker').addEventListener('click', (e) => {
   e.stopPropagation();
   currentMarkerPos = null;
-  updateLightboxMarker(null, null);
+  $('lightbox-marker-overlay').innerHTML = '';
 });
 
 document.addEventListener('keydown', (e) => {
@@ -1649,6 +1703,7 @@ function enterRouteEditMode() {
   routeColorInput.disabled = true;
   updateRouteHint();
   refreshAllNodeIcons();
+  syncMobileMenu();
 }
 
 function exitRouteEditMode() {
@@ -1662,6 +1717,7 @@ function exitRouteEditMode() {
   routeEditIndicator.classList.add('hidden');
   document.getElementById('map').classList.remove('route-edit-active');
   refreshAllNodeIcons();
+  syncMobileMenu();
 }
 
 function selectNode(nodeId) {
@@ -1818,30 +1874,11 @@ $('btn-tracking').addEventListener('click', () => setTrackingMode(!trackingMode)
 
 window.addEventListener('resize', updateTrackingLayout);
 
-$('tracking-prev').addEventListener('click', (e) => {
-  e.stopPropagation();
-  if (!trackingPhotos.length) return;
-  trackingPhotoIdx = (trackingPhotoIdx - 1 + trackingPhotos.length) % trackingPhotos.length;
-  updateTrackingPhoto();
-  if (trackingAutoTimer) startTrackingAutoAdvance();
-});
-$('tracking-next').addEventListener('click', (e) => {
-  e.stopPropagation();
-  if (!trackingPhotos.length) return;
-  trackingPhotoIdx = (trackingPhotoIdx + 1) % trackingPhotos.length;
-  updateTrackingPhoto();
-  if (trackingAutoTimer) startTrackingAutoAdvance();
-});
-$('tracking-pause').addEventListener('click', (e) => {
-  e.stopPropagation();
-  trackingPaused = !trackingPaused;
-  updateTrackingPauseBtn();
-  if (trackingPaused) stopTrackingAutoAdvance(); else startTrackingAutoAdvance();
-});
+// tracking-prev / tracking-next / tracking-pause are wired by trackingViewer (createPhotoDisplay)
 $('tracking-photo-wrap').addEventListener('click', () => {
-  if (!trackingPoiId || !trackingPhotos.length) return;
+  if (!trackingPoiId || !trackingViewer.photos.length) return;
   const poi = pois[trackingPoiId];
-  if (poi) openLightbox(poi, trackingPhotoIdx);
+  if (poi) openLightbox(poi, trackingViewer.index);
 });
 
 $('btn-enter-route-edit').addEventListener('click', () => {
@@ -1983,14 +2020,22 @@ function setTrackingMode(on) {
     $('tracking-panel').classList.add('hidden');
     document.body.classList.remove('tracking-portrait', 'tracking-landscape');
   }
+  syncMobileMenu();
 }
 
 function updateTrackingLayout() {
+  updateToolbarHeightVar();
   if (!trackingMode || editMode) return;
   const portrait = window.innerHeight > window.innerWidth;
   document.body.classList.toggle('tracking-portrait', portrait);
   document.body.classList.toggle('tracking-landscape', !portrait);
 }
+
+function updateToolbarHeightVar() {
+  const h = document.getElementById('toolbar').offsetHeight;
+  document.documentElement.style.setProperty('--toolbar-height', h + 'px');
+}
+updateToolbarHeightVar();
 
 function getPoiAtCrosshair() {
   const sz = map.getSize();
@@ -2022,102 +2067,18 @@ function updateTrackingDisplay() {
   }
 }
 
-function startTrackingAutoAdvance() {
-  stopTrackingAutoAdvance();
-  if (trackingPaused || trackingPhotos.length <= 1) return;
-  trackingAutoTimer = setInterval(() => {
-    trackingPhotoIdx = (trackingPhotoIdx + 1) % trackingPhotos.length;
-    updateTrackingPhoto();
-  }, 4000);
-}
-
-function stopTrackingAutoAdvance() {
-  if (trackingAutoTimer) { clearInterval(trackingAutoTimer); trackingAutoTimer = null; }
-}
-
-function updateTrackingPauseBtn() {
-  const btn = $('tracking-pause');
-  btn.innerHTML = trackingPaused ? '&#9654;' : '&#9208;';
-  btn.title = trackingPaused ? 'Play' : 'Pause';
-}
-
 function renderTrackingPanel(poi) {
-  trackingPhotos = lightboxPhotosFor(poi);
-  trackingPhotoIdx = 0;
-  trackingPaused = false;
   $('tracking-empty').classList.add('hidden');
   $('tracking-content').classList.remove('hidden');
   $('tracking-panel').classList.remove('hidden');
-  updateTrackingPhoto();
+  trackingViewer.open(lightboxPhotosFor(poi), 0);
   $('tracking-title').textContent = poi.title || '';
   $('tracking-note').textContent = poi.note || '';
   $('tracking-info').classList.toggle('hidden', !poi.title && !poi.note);
-  const multi = trackingPhotos.length > 1;
-  $('tracking-pause').classList.toggle('hidden', !multi);
-  if (multi) { updateTrackingPauseBtn(); startTrackingAutoAdvance(); }
-}
-
-function refreshTrackingMarkerOverlay(ph) {
-  const overlay = $('tracking-marker-overlay');
-  overlay.innerHTML = '';
-  if (!ph || ph.marker_x == null || ph.marker_y == null) return;
-  const img = $('tracking-photo');
-  if (!img.naturalWidth || !img.naturalHeight) return;
-  // object-fit: contain leaves letterbox bars — compute the actual image content rect
-  const cw = img.offsetWidth, ch = img.offsetHeight;
-  const scale = Math.min(cw / img.naturalWidth, ch / img.naturalHeight);
-  const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
-  overlay.style.left   = ((cw - dw) / 2) + 'px';
-  overlay.style.top    = ((ch - dh) / 2) + 'px';
-  overlay.style.width  = dw + 'px';
-  overlay.style.height = dh + 'px';
-  const cfg = MARKER_CONFIGS[ph.marker_rotation ?? 0] || MARKER_CONFIGS[0];
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('width', '30'); svg.setAttribute('height', '30');
-  svg.setAttribute('viewBox', '0 0 30 30');
-  svg.classList.add('photo-marker-pin');
-  svg.style.left = `${ph.marker_x * 100}%`;
-  svg.style.top  = `${ph.marker_y * 100}%`;
-  svg.style.transform = cfg.transform;
-  const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-  poly.setAttribute('points', cfg.points);
-  poly.setAttribute('fill', '#ef4444');
-  poly.setAttribute('stroke', '#000');
-  poly.setAttribute('stroke-width', '2');
-  poly.setAttribute('stroke-linejoin', 'round');
-  svg.appendChild(poly);
-  overlay.appendChild(svg);
-}
-
-function updateTrackingPhoto() {
-  const ph = trackingPhotos[trackingPhotoIdx];
-  if (!ph) { $('tracking-photo-wrap').classList.add('hidden'); return; }
-  $('tracking-photo-wrap').classList.remove('hidden');
-  const img = $('tracking-photo');
-  // Set up marker render after image loads (handles both cached and uncached)
-  img.onload = () => refreshTrackingMarkerOverlay(ph);
-  img.src = ph.url || `/uploads/originals/${ph.filename}`;
-  if (img.complete && img.naturalWidth > 0) { img.onload = null; refreshTrackingMarkerOverlay(ph); }
-  const dl = $('tracking-dir-label');
-  if (ph.direction) {
-    dl.textContent = `Direction: ${getDirName(ph.direction)}`;
-    dl.classList.remove('hidden');
-  } else {
-    dl.classList.add('hidden');
-  }
-  $('tracking-caption').textContent = ph.caption || '';
-  const multi = trackingPhotos.length > 1;
-  $('tracking-prev').classList.toggle('hidden', !multi);
-  $('tracking-next').classList.toggle('hidden', !multi);
 }
 
 function clearTrackingPanel() {
-  stopTrackingAutoAdvance();
-  trackingPhotos = [];
-  trackingPhotoIdx = 0;
-  $('tracking-photo').src = '';
-  $('tracking-marker-overlay').innerHTML = '';
-  $('tracking-pause').classList.add('hidden');
+  trackingViewer.close();
   $('tracking-panel').classList.add('hidden');
 }
 
@@ -2147,10 +2108,19 @@ function reapplyDirectionFilter() {
 }
 
 function updateDirPrefButtons() {
+  const names = [1, 2].map(d => {
+    const name = d === 1 ? currentRoute?.dir1_name : currentRoute?.dir2_name;
+    return name ? `To: ${name}` : String(d);
+  });
   document.querySelectorAll('#dir-pref .dir-btn').forEach(btn => {
     const d = btn.dataset.dir ? Number(btn.dataset.dir) : 0;
     btn.classList.toggle('active', d === directionPref);
+    if (d === 1 || d === 2) btn.textContent = names[d - 1];
   });
+  const sel = $('dir-pref-select');
+  sel.value = directionPref ? String(directionPref) : '';
+  sel.options[1].text = names[0];
+  sel.options[2].text = names[1];
 }
 
 function initDirPref() {
@@ -2167,6 +2137,46 @@ $('dir-pref').addEventListener('click', (e) => {
   updateDirPrefButtons();
   reapplyDirectionFilter();
 });
+$('dir-pref-select').addEventListener('change', (e) => {
+  directionPref = e.target.value ? Number(e.target.value) : 0;
+  localStorage.setItem('directionPref', directionPref);
+  updateDirPrefButtons();
+  reapplyDirectionFilter();
+});
+
+// ── Mobile menu ───────────────────────────────────────────────────────────────
+function syncMobileMenu() {
+  const pairs = [
+    ['mob-tracking', 'btn-tracking'],
+    ['mob-edit-mode', 'btn-edit-mode'],
+    ['mob-bulk-upload', 'btn-bulk-upload'],
+    ['mob-enter-route-edit', 'btn-enter-route-edit'],
+    ['mob-logout', 'btn-logout'],
+  ];
+  for (const [mobId, deskId] of pairs) {
+    const desk = $(deskId), mob = $(mobId);
+    mob.classList.toggle('hidden', desk.classList.contains('hidden'));
+    mob.textContent = desk.textContent;
+    mob.classList.toggle('active', desk.classList.contains('active'));
+  }
+}
+
+$('btn-mobile-menu').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const menu = $('mobile-menu');
+  const opening = menu.classList.contains('hidden');
+  menu.classList.toggle('hidden');
+  if (opening) syncMobileMenu();
+});
+
+['mob-tracking', 'mob-edit-mode', 'mob-bulk-upload', 'mob-enter-route-edit', 'mob-logout'].forEach(id => {
+  $(id).addEventListener('click', () => {
+    $('mobile-menu').classList.add('hidden');
+    $(id.replace('mob-', 'btn-')).click();
+  });
+});
+
+document.addEventListener('click', () => $('mobile-menu').classList.add('hidden'));
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 initLayerSwitcher();

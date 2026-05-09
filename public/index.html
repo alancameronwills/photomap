@@ -32,15 +32,29 @@
       <button class="dir-btn active" data-dir="">All</button>
       <button class="dir-btn" data-dir="1">1</button>
       <button class="dir-btn" data-dir="2">2</button>
+      <select id="dir-pref-select" class="dir-pref-select">
+        <option value="">All</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+      </select>
     </div>
+    <button id="btn-mobile-menu" class="mobile-menu-btn" aria-label="Menu">&#x22EE;</button>
   </div>
   <div id="toolbar-right">
     <button id="btn-bulk-upload" class="toolbar-btn hidden">Upload Photos</button>
     <input type="file" id="bulk-file-input" multiple accept="image/*" style="display:none"/>
     <button id="btn-enter-route-edit" class="toolbar-btn hidden">Edit Routes</button>
     <button id="btn-tracking" class="toolbar-btn">Track</button>
-    <button id="btn-edit-mode" class="toolbar-btn">Edit Mode</button>
+    <button id="btn-edit-mode" class="toolbar-btn">Edit</button>
     <button id="btn-logout" class="toolbar-btn hidden">Sign Out</button>
+  </div>
+  <!-- Mobile dropdown menu -->
+  <div id="mobile-menu" class="mobile-menu hidden">
+    <button id="mob-tracking"          class="mobile-menu-item">Track</button>
+    <button id="mob-edit-mode"         class="mobile-menu-item">Edit</button>
+    <button id="mob-bulk-upload"       class="mobile-menu-item hidden">Upload Photos</button>
+    <button id="mob-enter-route-edit"  class="mobile-menu-item hidden">Edit Routes</button>
+    <button id="mob-logout"            class="mobile-menu-item hidden">Sign Out</button>
   </div>
 </div>
 
