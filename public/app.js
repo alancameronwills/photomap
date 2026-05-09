@@ -1191,8 +1191,13 @@ setupDropZone(editDropZone, editFileInput, (files) => {
 
 // ── Event wiring ─────────────────────────────────────────────────────────────
 
+// Suppress the map click that fires when a native colour picker is dismissed
+// by tapping outside it on mobile (the dismiss tap falls through to the map).
+let suppressNextMapClick = false;
+
 // Map click
 map.on('click', (e) => {
+  if (suppressNextMapClick) { suppressNextMapClick = false; return; }
   if (routeEditMode) {
     handleRouteMapClick(e);
   } else if (editMode) {
@@ -1699,6 +1704,7 @@ function enterRouteEditMode() {
   activeRouteId = null;
   $('btn-enter-route-edit').textContent = 'Done Editing Routes';
   routeEditIndicator.classList.remove('hidden');
+  editIndicator.classList.add('hidden');
   document.getElementById('map').classList.add('route-edit-active');
   routeColorInput.disabled = true;
   updateRouteHint();
@@ -1707,6 +1713,14 @@ function enterRouteEditMode() {
 }
 
 function exitRouteEditMode() {
+  // If the most recently added node is the only node in its route, the user
+  // started a new route and didn't finish it — drop the orphan node so we don't
+  // leave a degenerate single-node route behind. deleteNode cascades to remove
+  // the route since it falls below 2 nodes.
+  const lastNodeId = undoStack[undoStack.length - 1];
+  const orphanRouteId = lastNodeId ? nodeRouteId[lastNodeId] : null;
+  const shouldCleanupOrphan = orphanRouteId && routes[orphanRouteId]?.nodes.length === 1;
+
   deselectNode();
   routeEditMode = false;
   waitingForRouteStart = false;
@@ -1715,9 +1729,12 @@ function exitRouteEditMode() {
   updateUndoBtn();
   $('btn-enter-route-edit').textContent = 'Edit Routes';
   routeEditIndicator.classList.add('hidden');
+  if (editMode) editIndicator.classList.remove('hidden');
   document.getElementById('map').classList.remove('route-edit-active');
   refreshAllNodeIcons();
   syncMobileMenu();
+
+  if (shouldCleanupOrphan) deleteNode(lastNodeId);
 }
 
 function selectNode(nodeId) {
@@ -1903,7 +1920,13 @@ $('dir2-name-input').addEventListener('change', async () => {
 });
 
 
+// Whenever the colour picker is invoked (either by direct click on the input or
+// programmatically via routeColorInput.click() from the mobile menu), arm the
+// suppress flag so the dismiss tap on mobile doesn't reach the map.
+routeColorInput.addEventListener('click', () => { suppressNextMapClick = true; });
 routeColorInput.addEventListener('input', () => {
+  // A real colour selection fired — no dismiss click to suppress.
+  suppressNextMapClick = false;
   if (!selectedNodeId) return;
   const routeId = nodeRouteId[selectedNodeId];
   if (!routeId) return;
@@ -2176,7 +2199,48 @@ $('btn-mobile-menu').addEventListener('click', (e) => {
   });
 });
 
-document.addEventListener('click', () => $('mobile-menu').classList.add('hidden'));
+// ── Route-edit mobile menu ────────────────────────────────────────────────────
+const ROUTE_EDIT_MENU_PAIRS = [
+  ['mob-split-route',  'btn-split-route'],
+  ['mob-delete-route', 'btn-delete-route'],
+  ['mob-delete-node',  'btn-delete-node'],
+  ['mob-undo-node',    'btn-undo-node'],
+];
+function syncRouteEditMenu() {
+  for (const [mobId, deskId] of ROUTE_EDIT_MENU_PAIRS) {
+    $(mobId).disabled = $(deskId).disabled;
+  }
+  const colourBtn = $('mob-route-color');
+  colourBtn.disabled = routeColorInput.disabled;
+  colourBtn.querySelector('.mobile-menu-swatch').style.background = routeColorInput.value;
+}
+$('btn-route-edit-menu').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const menu = $('route-edit-menu');
+  const opening = menu.classList.contains('hidden');
+  menu.classList.toggle('hidden');
+  if (opening) syncRouteEditMenu();
+});
+for (const [mobId, deskId] of ROUTE_EDIT_MENU_PAIRS) {
+  $(mobId).addEventListener('click', () => {
+    $('route-edit-menu').classList.add('hidden');
+    if (!$(deskId).disabled) $(deskId).click();
+  });
+}
+$('mob-route-color').addEventListener('click', () => {
+  $('route-edit-menu').classList.add('hidden');
+  if (!routeColorInput.disabled) routeColorInput.click();
+});
+$('mob-done-route-edit').addEventListener('click', () => {
+  $('route-edit-menu').classList.add('hidden');
+  $('btn-enter-route-edit').click();
+});
+$('btn-edit-routes-shortcut').addEventListener('click', () => $('btn-enter-route-edit').click());
+
+document.addEventListener('click', () => {
+  $('mobile-menu').classList.add('hidden');
+  $('route-edit-menu').classList.add('hidden');
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 initLayerSwitcher();

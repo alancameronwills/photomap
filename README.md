@@ -11,7 +11,9 @@ An interactive map for organising geotagged photos and hand-drawn routes. Photos
 - **Bulk upload** — drag a folder of photos onto the map; GPS is extracted client-side before scaling so EXIF survives compression.
 - **POI labels** — titles appear as map labels at zoom ≥ 13, auto-positioned to avoid map edges.
 - **Photo annotations** — each photo can have a caption, a direction tag (1 or 2), and a positioned arrow marker (↓ ← →) placed by clicking on the photo in the lightbox.
-- **Direction preference** — a toolbar control (All / 1 / 2) sorts preferred-direction photos first within each POI and hides POIs whose photos are all in the opposite direction.
+- **Direction preference** — a toolbar control (All / 1 / 2) sorts preferred-direction photos first within each POI and hides POIs whose photos are all in the opposite direction. When the current route names its directions, the buttons read "To: \<name\>" instead of "1" / "2".
+- **Tracking mode** — split-screen photo panel that auto-advances through the photos of whichever POI the map crosshair lands on; pause/play, prev/next, and direction-aware filtering all in the panel.
+- **Mobile-friendly UI** — at narrow widths the toolbar wraps and the action buttons collapse into a kebab dropdown; the route-editing bar uses its own dropdown that opens upward.
 
 ## Running locally
 
@@ -82,7 +84,7 @@ Clicking a POI marker opens a view depending on its content:
 
 ### Editing
 
-Click **Edit Mode** in the toolbar and enter the password (or sign in via Google/Microsoft). In edit mode:
+Click **Edit** in the toolbar and enter the password (or sign in via Google/Microsoft). In edit mode:
 
 - **Click the map** to create a new POI (title, notes, photos).
 - **Drag a POI marker** to reposition it.
@@ -93,12 +95,13 @@ Click **Edit Mode** in the toolbar and enter the password (or sign in via Google
 
 ### Route editing
 
-Click **Edit Routes** (toolbar, visible in Edit Mode):
+Click **Edit Routes** (toolbar in Edit Mode, or shortcut on the right of the bottom Edit Mode bar):
 
 - **Start a route** — click any map location, POI, or existing route start/end node.
 - **Click a route line** to insert a node at that point.
-- **Click a node** to select it, then use Delete Node, Undo, Split Route, Delete Route, or the colour picker.
+- **Click a node** to select it, then use Delete Node, Undo, Split Route, Delete Route, or the colour picker (or the kebab `⋮` dropdown on narrow screens).
 - **Drag a node** to reposition it. Dragging close to a POI snaps and links it.
+- **Done** — exits route-edit. If you started a new route but only placed one node, that orphan is removed automatically.
 
 ## Development
 

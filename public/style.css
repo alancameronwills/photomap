@@ -102,6 +102,17 @@ body, html {
 .mobile-menu-item:last-child { border-bottom: none; }
 .mobile-menu-item:hover { background: rgba(255,255,255,0.08); }
 .mobile-menu-item.active { color: #60a5fa; }
+.mobile-menu-item:disabled { opacity: 0.35; cursor: default; }
+.mobile-menu-item:disabled:hover { background: none; }
+/* Variant that opens upward (for indicators sitting at the bottom of the screen) */
+.mobile-menu-up {
+  top: auto;
+  bottom: 100%;
+  border-top: 1px solid rgba(255,255,255,0.12);
+  border-bottom: none;
+  border-bottom-left-radius: 0;
+  border-top-left-radius: 8px;
+}
 
 @media (max-width: 600px) {
   .toolbar-btn { font-size: 0.8rem; padding: 4px 10px; }
@@ -781,26 +792,39 @@ body, html {
   color: #000;
   font-size: 0.85rem;
   font-weight: 600;
-  padding: 10px 16px;
+  padding: 6px 16px;
   z-index: 800;
   display: flex;
   align-items: center;
   gap: 12px;
 }
 #edit-indicator.hidden { display: none; }
-
-/* Push Leaflet's bottom-right controls above the edit mode banner(s) */
-#map.edit-active .leaflet-bottom.leaflet-right {
-  bottom: 42px;
+.edit-indicator-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(0,0,0,0.45);
+  background: rgba(0,0,0,0.08);
+  color: #000;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
 }
+.edit-indicator-btn:hover { background: rgba(0,0,0,0.18); }
+
+/* Push Leaflet's bottom-right controls above the edit mode banner.
+   Only one of edit-indicator / route-edit-indicator is visible at a time. */
+#map.edit-active .leaflet-bottom.leaflet-right,
 #map.route-edit-active .leaflet-bottom.leaflet-right {
-  bottom: 84px; /* both bars visible: 42px edit + 42px route-edit */
+  bottom: 42px;
 }
 
 /* ── Layer switcher ── */
 #layer-switcher {
   position: fixed;
-  top: 62px;
+  top: 90px;
   right: 10px;
   z-index: 500;
   display: flex;
@@ -884,7 +908,7 @@ body, html {
 /* ── Route edit indicator ── */
 #route-edit-indicator {
   position: fixed;
-  bottom: 40px; left: 0; right: 0; /* sits above the edit indicator */
+  bottom: 0; left: 0; right: 0; /* edit-indicator is hidden while this is visible */
   background: rgba(30, 58, 138, 0.93);
   backdrop-filter: blur(8px);
   color: #fff;
@@ -897,6 +921,30 @@ body, html {
   flex-wrap: wrap;
 }
 #route-edit-indicator.hidden { display: none; }
+#btn-route-edit-menu { margin-left: auto; }
+.mobile-menu-color { display: flex; align-items: center; gap: 10px; }
+.mobile-menu-swatch {
+  width: 18px; height: 18px;
+  border-radius: 3px;
+  border: 1px solid rgba(255,255,255,0.4);
+  background: #ff69b4;
+  flex-shrink: 0;
+}
+@media (max-width: 480px) {
+  #route-edit-indicator #btn-split-route,
+  #route-edit-indicator #btn-delete-route,
+  #route-edit-indicator #btn-delete-node,
+  #route-edit-indicator #btn-undo-node { display: none; }
+  /* Keep the native colour input in the DOM so we can trigger it programmatically,
+     but make it visually invisible — replaced by the swatch in the menu. */
+  #route-edit-indicator #route-color-input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    width: 1px; height: 1px;
+  }
+  #btn-route-edit-menu { display: flex; align-items: center; }
+}
 
 .route-select {
   background: rgba(255,255,255,0.12);

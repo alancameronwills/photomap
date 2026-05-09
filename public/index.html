@@ -247,6 +247,7 @@
 <!-- Edit mode indicator -->
 <div id="edit-indicator" class="hidden">
   <span>&#9998; Edit Mode — click map to add POI &nbsp;|&nbsp; drag markers to reposition</span>
+  <button id="btn-edit-routes-shortcut" class="edit-indicator-btn">Edit Routes</button>
 </div>
 
 <!-- Route editing indicator (replaces edit-indicator while route-edit is active) -->
@@ -257,6 +258,17 @@
   <button id="btn-delete-route" class="btn-sm btn-danger-sm" disabled>Delete Route</button>
   <button id="btn-delete-node" class="btn-sm btn-danger-sm" disabled>Delete Node</button>
   <button id="btn-undo-node" class="btn-sm" disabled>Undo</button>
+  <button id="btn-route-edit-menu" class="mobile-menu-btn" aria-label="Route actions">&#x22EE;</button>
+  <div id="route-edit-menu" class="mobile-menu mobile-menu-up hidden">
+    <button id="mob-route-color" class="mobile-menu-item mobile-menu-color">
+      <span class="mobile-menu-swatch"></span>Colour
+    </button>
+    <button id="mob-split-route"  class="mobile-menu-item">Split Route</button>
+    <button id="mob-delete-route" class="mobile-menu-item">Delete Route</button>
+    <button id="mob-delete-node"  class="mobile-menu-item">Delete Node</button>
+    <button id="mob-undo-node"    class="mobile-menu-item">Undo</button>
+    <button id="mob-done-route-edit" class="mobile-menu-item">Done</button>
+  </div>
   <div id="dir-name-fields" class="hidden">
     <span class="dir-name-label">Dir&#x202F;1:</span>
     <input type="text" id="dir1-name-input" maxlength="20" class="dir-name-input" placeholder="Direction 1"/>

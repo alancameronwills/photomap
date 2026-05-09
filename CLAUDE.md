@@ -86,7 +86,7 @@ Both db modules export the same function signatures:
 
 No build step — plain JS loaded directly by the browser. Scripts served locally (from `node_modules` via `/vendor/` routes) in order: Leaflet → MarkerCluster → exifr lite → `/config.js` → `app.js`.
 
-**`app.js`** (~1700 lines) organised into sections:
+**`app.js`** (~2200 lines) organised into sections:
 
 - **Photo scaling / GPS extraction** — `scaleImageFile(file, maxPx=1000)` scales via canvas; `extractGPSFromFiles(files)` reads EXIF from originals before scaling strips it. Both run in parallel in `uploadPhotosToMap`, which batches the scaled files into groups of 10 and posts each batch to `POST /api/upload-photos` with a `gpsData` JSON field. The server prefers `gpsData[i]` over re-extracting from the scaled file.
 - **Photo URLs** — all photo display uses `ph.url || '/uploads/originals/' + ph.filename` and `ph.thumb_url || '/uploads/thumbs/' + ph.thumb_filename`. On AWS the `url`/`thumb_url` fields are presigned S3 URLs returned by the API; on local they are absent and the fallback paths are used.
@@ -98,8 +98,33 @@ No build step — plain JS loaded directly by the browser. Scripts served locall
 - **POI click routing** (view mode) — `openFullModal` if POI has title or note; `openLightbox(poi, 0)` if photos only; `showPreview` as fallback.
 - **Loading indicator** — `#loading-overlay` covers the map until the startup `Promise.all([checkAuth(), loadPois(), loadRoutes()])` resolves, then fades out and is removed from the DOM.
 - **Edit mode** — `setEditMode(on)` moves markers between cluster and map, toggles toolbar buttons (Upload Photos, Edit Routes) and the edit-indicator banner. Always starts off on page load. Entering edit mode reveals all POIs regardless of direction filter; exiting re-applies it.
-- **Direction preference** — toolbar control (All/1/2) stored in `localStorage`. `sortedPhotos(poi)` sorts matching-direction photos first; `shouldHidePoi(poi)` returns true if all photos have the opposite direction; `reapplyDirectionFilter()` re-renders all markers when preference changes.
-- **Photo annotations (lightbox edit mode)** — clicking a thumbnail in the edit dialog calls `openEditLightbox(poiId, idx)`, which adds a crosshair overlay on the photo. Clicking the photo places a directional arrow marker (↓/←/→, controlled by rotation buttons); caption and direction tag are also editable. All changes are buffered in `pendingPhotoEdits` and flushed via `PUT /api/photos/:id` calls when the POI is saved. `stashCurrentLightboxPhotoEdit()` snapshots the current photo's state before navigating or closing.
+- **Direction preference** — toolbar control (All/1/2) stored in `localStorage`. Buttons show `"To: <name>"` when `currentRoute.dir1_name` / `dir2_name` are set, falling back to `"1"`/`"2"`; `updateDirPrefButtons()` is called from `renderPhoto` so the names refresh whenever a photo is displayed. `sortedPhotos(poi)` sorts matching-direction photos first; `shouldHidePoi(poi)` returns true if all photos have the opposite direction.
+- **Photo annotations (lightbox edit mode)** — clicking a thumbnail in the edit dialog calls `openEditLightbox(poiId, idx)`, which adds a crosshair overlay on the photo. Clicking the photo places a directional arrow marker (↓/←/→, controlled by rotation buttons); caption and direction tag are also editable. All changes are buffered in `pendingPhotoEdits` and flushed via `PUT /api/photos/:id` calls when the POI is saved. `stashCurrentLightboxPhotoEdit()` snapshots the current photo's state before navigating or closing. The lightbox does not auto-advance while editing — `openEditLightbox` calls `lightboxViewer.open(photos, idx, false)` to suppress the timer.
+
+#### Photo display factory
+
+`createPhotoDisplay({ imgEl, overlayEl, captionEl, dirLabelEl, prevBtn, nextBtn, pauseBtn, onBeforeNav, onAfterNav })` returns an object encapsulating one photo-display context: image src, marker overlay, caption, direction label, prev/next/pause wiring, and the auto-advance interval. Two instances are created up-front:
+
+- `lightboxViewer` — the full-screen modal lightbox; `onBeforeNav`/`onAfterNav` callbacks stash pending photo edits and refresh the edit panel.
+- `trackingViewer` — the half-screen tracking panel; no edit callbacks.
+
+`renderMarker(overlayEl, imgEl, ph)` is the shared marker renderer used by both. It compensates for `object-fit: contain` letterboxing in the tracking panel by computing the actual displayed image rect from `imgEl.naturalWidth/Height` and `imgEl.offsetWidth/Height`. Auto-advance is gated on `trackingMode && photos.length > 1` and an optional `autoAdvance` argument to `open()`.
+
+#### Mobile / responsive UI
+
+At ≤480px the toolbar wraps to two rows (title on its own line, dir-pref + ⋮ menu button on the second). The right-side action buttons collapse into `#mobile-menu`, a kebab dropdown — items proxy clicks to the corresponding desktop buttons (`mob-tracking` → `btn-tracking` etc.) so all state lives in one place. `syncMobileMenu()` mirrors visibility, text and `.active` state from desktop buttons to menu items and is called from each state-changing function (`setEditMode`, `setTrackingMode`, `enterRouteEditMode`, `exitRouteEditMode`, `checkAuth`, `logout`).
+
+`#route-edit-indicator` has its own kebab menu (`#route-edit-menu` with the `mobile-menu-up` variant that opens upward since the indicator sits at the bottom). The native colour picker (`<input type="color">`) is hidden at narrow widths via `opacity: 0; pointer-events: none` while remaining in the DOM; tapping the menu's "Colour" item calls `routeColorInput.click()` to open the OS picker. The swatch is updated from `routeColorInput.value` when the menu opens.
+
+`--toolbar-height` is a CSS variable kept in sync with `#toolbar.offsetHeight` (set by `updateToolbarHeightVar()`, called on resize). The tracking panel positions itself relative to it (`top: var(--toolbar-height)`) so it sits below the actual toolbar height even when the toolbar wraps to two rows on narrow screens.
+
+#### Bottom indicators
+
+Only one of `#edit-indicator` (orange "Edit Mode" banner) and `#route-edit-indicator` (blue route-editing controls) is visible at a time. Both sit at `bottom: 0`. `enterRouteEditMode` hides the edit-indicator; `exitRouteEditMode` restores it (when `editMode` is still true). The Edit-Mode banner has an "Edit Routes" shortcut button on the right that proxies clicks to `btn-enter-route-edit`.
+
+#### Map click suppression after colour picker
+
+On mobile, dismissing the native colour picker by tapping outside it lets the tap fall through to the Leaflet map. `routeColorInput.addEventListener('click', ...)` arms a `suppressNextMapClick` flag whenever the picker is invoked (directly or via `routeColorInput.click()` from the menu); the next `map.on('click')` event consumes the flag and returns early. The flag is cleared by the input's `input` event so a real colour selection doesn't leave it stale.
 
 #### Route editing
 
@@ -122,6 +147,8 @@ State variables: `routeEditMode`, `waitingForRouteStart`, `activeRouteId`, `exte
 **Split route** — `splitSelectedRoute()` calls `POST /routes/:id/split`; cleans up stale markers for moved tail nodes before calling `renderRoute` on the new route.
 
 **Cascade on POI delete** — `deleteCurrentPoi()` calls `DELETE /pois/:id` which returns `{deletedNodeIds, deletedRouteIds}`; client does surgical cleanup of markers, polylines and route state before removing the POI marker.
+
+**Auto-cleanup on exit** — `exitRouteEditMode` checks `undoStack[top]`: if the most recently added node is the only node in its route (the user started a route but didn't finish it), it fires `deleteNode(lastNodeId)` which cascades the empty route. The deletion runs after the synchronous UI cleanup so the user perceives the exit immediately.
 
 ### Data model
 
