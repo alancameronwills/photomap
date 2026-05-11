@@ -1653,6 +1653,8 @@ const routeColorInput    = $('route-color-input');
 const btnDeleteNode      = $('btn-delete-node');
 const btnSplitRoute      = $('btn-split-route');
 const btnDeleteRoute     = $('btn-delete-route');
+const btnExportGpx       = $('btn-export-gpx');
+const btnExportKml       = $('btn-export-kml');
 
 function setActiveRoute(routeId) {
   activeRouteId = routeId;
@@ -1773,6 +1775,8 @@ function selectNode(nodeId) {
   btnDeleteNode.disabled = false;
   btnSplitRoute.disabled = false;
   btnDeleteRoute.disabled = false;
+  btnExportGpx.disabled = false;
+  btnExportKml.disabled = false;
   currentRoute = routes[nodeRouteId[nodeId]] || null;
   routeColorInput.value = currentRoute?.color || '#ff69b4';
   routeColorInput.disabled = false;
@@ -1795,6 +1799,8 @@ function deselectNode() {
   btnDeleteNode.disabled = true;
   btnSplitRoute.disabled = true;
   btnDeleteRoute.disabled = true;
+  btnExportGpx.disabled = true;
+  btnExportKml.disabled = true;
   routeColorInput.disabled = true;
   $('dir-name-fields').classList.add('hidden');
 }
@@ -2044,6 +2050,153 @@ btnDeleteNode.addEventListener('click', deleteSelectedNode);
 $('btn-undo-node').addEventListener('click', undoLastNode);
 btnSplitRoute.addEventListener('click', splitSelectedRoute);
 btnDeleteRoute.addEventListener('click', deleteSelectedRoute);
+btnExportGpx.addEventListener('click', exportSelectedRouteGpx);
+btnExportKml.addEventListener('click', exportSelectedRouteKml);
+
+function xmlEscape(s) {
+  return String(s).replace(/[<>&'"]/g, c => ({ '<':'&lt;', '>':'&gt;', '&':'&amp;', "'":'&apos;', '"':'&quot;' }[c]));
+}
+
+function buildGpx(route) {
+  const nodes = route.nodes;
+  const routeName = route.name || `Route ${route.id}`;
+  const time = new Date().toISOString();
+  const origin = window.location.origin;
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<gpx version="1.1" creator="Map y Ffoto" xmlns="http://www.topografix.com/GPX/1/1">',
+    '  <metadata>',
+    `    <name>${xmlEscape(routeName)}</name>`,
+    `    <time>${time}</time>`,
+    '  </metadata>',
+  ];
+  for (const n of nodes) {
+    if (n.poi_id == null) continue;
+    const poi = pois[n.poi_id];
+    if (!poi) continue;
+    const photos = poi.photos || [];
+    if (!poi.title && !poi.note && photos.length === 0) continue;
+    const wptName = poi.title || `Photo${photos.length > 1 ? 's' : ''}`;
+    lines.push(`  <wpt lat="${n.lat}" lon="${n.lng}">`);
+    lines.push(`    <name>${xmlEscape(wptName)}</name>`);
+    if (poi.note) lines.push(`    <desc>${xmlEscape(poi.note)}</desc>`);
+    for (const ph of photos) {
+      if (!ph.filename) continue;
+      const href = `${origin}/uploads/originals/${ph.filename}`;
+      lines.push(`    <link href="${xmlEscape(href)}">`);
+      if (ph.caption) lines.push(`      <text>${xmlEscape(ph.caption)}</text>`);
+      lines.push('      <type>image/jpeg</type>');
+      lines.push('    </link>');
+    }
+    lines.push('  </wpt>');
+  }
+  lines.push('  <trk>');
+  lines.push(`    <name>${xmlEscape(routeName)}</name>`);
+  lines.push('    <trkseg>');
+  for (const n of nodes) lines.push(`      <trkpt lat="${n.lat}" lon="${n.lng}"/>`);
+  lines.push('    </trkseg>');
+  lines.push('  </trk>');
+  lines.push('</gpx>');
+  return lines.join('\n');
+}
+
+function downloadBlob(content, filename, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function safeRouteFilename(route) {
+  return (route.name || `route-${route.id}`).replace(/[^a-z0-9_\-]+/gi, '_').replace(/^_+|_+$/g, '') || `route-${route.id}`;
+}
+
+function exportSelectedRouteGpx() {
+  if (!selectedNodeId) return;
+  const route = routes[nodeRouteId[selectedNodeId]];
+  if (!route || !route.nodes || route.nodes.length === 0) return;
+  downloadBlob(buildGpx(route), `${safeRouteFilename(route)}.gpx`, 'application/gpx+xml');
+}
+
+// KML colour is AABBGGRR hex (alpha first, BGR not RGB).
+function kmlColor(hex, alpha = 'ff') {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return alpha + 'b469ff'; // default: opaque pink #ff69b4
+  const rgb = m[1].toLowerCase();
+  return alpha + rgb.slice(4, 6) + rgb.slice(2, 4) + rgb.slice(0, 2);
+}
+
+// CDATA can't contain ']]>'. Split it across two CDATA sections if it does.
+function cdataEscape(s) {
+  return String(s).replace(/]]>/g, ']]]]><![CDATA[>');
+}
+
+function buildKml(route) {
+  const nodes = route.nodes;
+  const routeName = route.name || `Route ${route.id}`;
+  const origin = window.location.origin;
+  const lineColor = kmlColor(route.color);
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2">',
+    '<Document>',
+    `  <name>${xmlEscape(routeName)}</name>`,
+    '  <Style id="routeLine">',
+    '    <LineStyle>',
+    `      <color>${lineColor}</color>`,
+    '      <width>4</width>',
+    '    </LineStyle>',
+    '  </Style>',
+  ];
+  for (const n of nodes) {
+    if (n.poi_id == null) continue;
+    const poi = pois[n.poi_id];
+    if (!poi) continue;
+    const photos = poi.photos || [];
+    if (!poi.title && !poi.note && photos.length === 0) continue;
+    const wptName = poi.title || (photos.length ? `Photo${photos.length > 1 ? 's' : ''}` : 'POI');
+
+    const htmlParts = [];
+    if (poi.note) htmlParts.push(`<p>${xmlEscape(poi.note)}</p>`);
+    for (const ph of photos) {
+      if (!ph.filename) continue;
+      const href = `${origin}/uploads/originals/${ph.filename}`;
+      htmlParts.push(`<p><img src="${xmlEscape(href)}" style="max-width:600px"/></p>`);
+      if (ph.caption) htmlParts.push(`<p>${xmlEscape(ph.caption)}</p>`);
+    }
+
+    lines.push('  <Placemark>');
+    lines.push(`    <name>${xmlEscape(wptName)}</name>`);
+    if (htmlParts.length) lines.push(`    <description><![CDATA[${cdataEscape(htmlParts.join(''))}]]></description>`);
+    lines.push('    <Point>');
+    lines.push(`      <coordinates>${n.lng},${n.lat}</coordinates>`);
+    lines.push('    </Point>');
+    lines.push('  </Placemark>');
+  }
+  lines.push('  <Placemark>');
+  lines.push(`    <name>${xmlEscape(routeName)}</name>`);
+  lines.push('    <styleUrl>#routeLine</styleUrl>');
+  lines.push('    <LineString>');
+  lines.push('      <tessellate>1</tessellate>');
+  lines.push(`      <coordinates>${nodes.map(n => `${n.lng},${n.lat}`).join(' ')}</coordinates>`);
+  lines.push('    </LineString>');
+  lines.push('  </Placemark>');
+  lines.push('</Document>');
+  lines.push('</kml>');
+  return lines.join('\n');
+}
+
+function exportSelectedRouteKml() {
+  if (!selectedNodeId) return;
+  const route = routes[nodeRouteId[selectedNodeId]];
+  if (!route || !route.nodes || route.nodes.length === 0) return;
+  downloadBlob(buildKml(route), `${safeRouteFilename(route)}.kml`, 'application/vnd.google-earth.kml+xml');
+}
 
 document.addEventListener('keydown', (e) => {
   if (!routeEditMode) return;
@@ -2441,8 +2594,8 @@ $('btn-mobile-menu').addEventListener('click', (e) => {
 const ROUTE_EDIT_MENU_PAIRS = [
   ['mob-split-route',  'btn-split-route'],
   ['mob-delete-route', 'btn-delete-route'],
-  ['mob-delete-node',  'btn-delete-node'],
-  ['mob-undo-node',    'btn-undo-node'],
+  ['mob-export-gpx',   'btn-export-gpx'],
+  ['mob-export-kml',   'btn-export-kml'],
 ];
 function syncRouteEditMenu() {
   for (const [mobId, deskId] of ROUTE_EDIT_MENU_PAIRS) {

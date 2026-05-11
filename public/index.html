@@ -298,19 +298,21 @@
 <div id="route-edit-indicator" class="hidden">
   <input type="color" id="route-color-input" value="#ff69b4" class="route-color-input" title="Route colour" disabled>
   <span id="route-edit-hint" class="route-edit-hint"></span>
+  <button id="btn-delete-node" class="btn-sm btn-danger-sm" disabled>Delete</button>
+  <button id="btn-undo-node" class="btn-sm" disabled>Undo</button>
   <button id="btn-split-route" class="btn-sm" disabled>Split Route</button>
   <button id="btn-delete-route" class="btn-sm btn-danger-sm" disabled>Delete Route</button>
-  <button id="btn-delete-node" class="btn-sm btn-danger-sm" disabled>Delete Node</button>
-  <button id="btn-undo-node" class="btn-sm" disabled>Undo</button>
-  <button id="btn-route-edit-menu" class="mobile-menu-btn" aria-label="Route actions">&#x22EE;</button>
+  <button id="btn-export-gpx" class="btn-sm" disabled title="Export selected node's route as GPX">Export GPX</button>
+  <button id="btn-export-kml" class="btn-sm" disabled title="Export selected node's route as KML (with inline photos)">Export KML</button>
+  <button id="btn-route-edit-menu" class="route-menu-btn" aria-label="Route actions">Route &#x25BE;</button>
   <div id="route-edit-menu" class="mobile-menu mobile-menu-up hidden">
     <button id="mob-route-color" class="mobile-menu-item mobile-menu-color">
       <span class="mobile-menu-swatch"></span>Colour
     </button>
     <button id="mob-split-route"  class="mobile-menu-item">Split Route</button>
     <button id="mob-delete-route" class="mobile-menu-item">Delete Route</button>
-    <button id="mob-delete-node"  class="mobile-menu-item">Delete Node</button>
-    <button id="mob-undo-node"    class="mobile-menu-item">Undo</button>
+    <button id="mob-export-gpx"   class="mobile-menu-item">Export GPX</button>
+    <button id="mob-export-kml"   class="mobile-menu-item">Export KML</button>
     <button id="mob-done-route-edit" class="mobile-menu-item">Done</button>
   </div>
   <div id="dir-name-fields" class="hidden">

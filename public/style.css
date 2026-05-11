@@ -972,7 +972,6 @@ body.tracking-portrait #layer-switcher {
   flex-wrap: wrap;
 }
 #route-edit-indicator.hidden { display: none; }
-#btn-route-edit-menu { margin-left: auto; }
 .mobile-menu-color { display: flex; align-items: center; gap: 10px; }
 .mobile-menu-swatch {
   width: 18px; height: 18px;
@@ -981,21 +980,34 @@ body.tracking-portrait #layer-switcher {
   background: #ff69b4;
   flex-shrink: 0;
 }
-@media (max-width: 480px) {
-  #route-edit-indicator #btn-split-route,
-  #route-edit-indicator #btn-delete-route,
-  #route-edit-indicator #btn-delete-node,
-  #route-edit-indicator #btn-undo-node { display: none; }
-  /* Keep the native colour input in the DOM so we can trigger it programmatically,
-     but make it visually invisible — replaced by the swatch in the menu. */
-  #route-edit-indicator #route-color-input {
-    position: absolute;
-    opacity: 0;
-    pointer-events: none;
-    width: 1px; height: 1px;
-  }
-  #btn-route-edit-menu { display: flex; align-items: center; }
+/* Items moved into the Route ▾ menu — hidden in the toolbar at all widths. */
+#route-edit-indicator #btn-split-route,
+#route-edit-indicator #btn-delete-route,
+#route-edit-indicator #btn-export-gpx,
+#route-edit-indicator #btn-export-kml { display: none; }
+/* Native colour input stays in the DOM (so routeColorInput.click() still works)
+   but is visually replaced by the swatch in the Route menu. */
+#route-edit-indicator #route-color-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 1px; height: 1px;
 }
+.route-menu-btn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.25);
+  color: #e0e0f0;
+  font-size: 0.85rem;
+  font-family: inherit;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.route-menu-btn:hover { background: rgba(255,255,255,0.1); }
 
 .route-select {
   background: rgba(255,255,255,0.12);
