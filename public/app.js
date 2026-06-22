@@ -2213,29 +2213,41 @@ const profileStats   = $('profile-stats');
 const profileTitle   = $('profile-title');
 const profileCache   = {}; // routeId -> profile JSON (cleared when a route's nodes change)
 let   profileDrawn   = null; // { data, route } last drawn — for redraw on resize
-let   selectedRouteId = null; // route chosen for the profile (tap a route line / select a node)
+let   selectedRouteId = null; // route chosen for the profile (tap a route line / track a POI / select a node)
+const SELECTED_ROUTE_COLOR = '#b30000'; // deep red for the selected route
 
-// Select a route as the Profile button's target: highlight it, enable the button,
-// and — if the panel is already open — switch it to show this route.
-function setSelectedRoute(id) {
-  selectedRouteId = (id != null && routes[id]) ? id : null;
+// Paint the selected route in deep red; all others keep their own colour.
+function restyleRoutePolylines() {
   for (const rid in routePolylines) {
-    const sel = String(rid) === String(selectedRouteId);
-    routePolylines[rid].setStyle({ opacity: sel ? 0.85 : 0.5 });
+    const route = routes[rid];
+    const sel = !routeEditMode && String(rid) === String(selectedRouteId);
+    routePolylines[rid].setStyle({
+      color: sel ? SELECTED_ROUTE_COLOR : (route?.color || '#ff69b4'),
+      opacity: sel ? 0.9 : 0.5,
+    });
   }
+}
+
+// Select a route as the Profile button's target: highlight it (deselecting any
+// previous), enable the button, and — if the panel is open — switch it to show.
+function setSelectedRoute(id) {
+  const newId = (id != null && routes[id]) ? id : null;
+  if (String(newId) === String(selectedRouteId)) return; // unchanged — avoid redundant redraw
+  selectedRouteId = newId;
+  restyleRoutePolylines();
   updateProfileBtn();
   if (selectedRouteId && !profilePanel.classList.contains('hidden')) showRouteProfile(selectedRouteId);
 }
 
 // Reflect selection (enabled) + open state (active) on the Profile button; the
-// mobile-menu twin is mirrored by syncMobileMenu.
+// mobile twin is mirrored by syncMobileMenu.
 function updateProfileBtn() {
   btnProfile.disabled = selectedRouteId == null;
   btnProfile.classList.toggle('active', !profilePanel.classList.contains('hidden'));
   syncMobileMenu();
 }
 
-// Profile button: toggle the panel for the selected route.
+// Profile button toggles the panel for the currently selected route.
 function toggleProfile() {
   if (selectedRouteId == null) return;
   if (profilePanel.classList.contains('hidden')) showRouteProfile(selectedRouteId);
@@ -2339,8 +2351,7 @@ function drawProfile(data, route) {
   profileStats.innerHTML =
     `Distance <b>${(xMax / 1000).toFixed(2)} km</b>` +
     ` &nbsp; Ascent <b>${Math.round(asc)} m</b>` +
-    ` &nbsp; Descent <b>${Math.round(desc)} m</b>` +
-    ` &nbsp; Range <b>${Math.round(yMin)}–${Math.round(yMax)} m</b>`;
+    ` &nbsp; Descent <b>${Math.round(desc)} m</b>`;
 
   // Size the canvas to its container (the flex chart area) for the device pixel
   // ratio so text/lines stay crisp. CSS sets the canvas to 100% width/height, so
@@ -2552,6 +2563,25 @@ function getPoiAtCrosshair() {
   return bestPoi;
 }
 
+// Route whose line passes closest to a lat/lng, within maxPx screen pixels (else
+// null). Used so a tracked POI selects the route it sits on even when it isn't a
+// linked route node.
+function nearestRouteIdToLatLng(latlng, maxPx = 30) {
+  if (typeof L === 'undefined' || !L.LineUtil) return null;
+  const p = map.latLngToLayerPoint(latlng);
+  let bestId = null, best = Infinity;
+  for (const rid in routes) {
+    const nodes = routes[rid].nodes || [];
+    for (let i = 1; i < nodes.length; i++) {
+      const a = map.latLngToLayerPoint([nodes[i - 1].lat, nodes[i - 1].lng]);
+      const b = map.latLngToLayerPoint([nodes[i].lat, nodes[i].lng]);
+      const d = L.LineUtil.pointToSegmentDistance(p, a, b);
+      if (d < best) { best = d; bestId = rid; }
+    }
+  }
+  return best <= maxPx ? bestId : null;
+}
+
 function updateTrackingDisplay() {
   if (!trackingMode || editMode) return;
   const poi = getPoiAtCrosshair();
@@ -2561,6 +2591,12 @@ function updateTrackingDisplay() {
   if (poi) {
     updateCurrentRouteForPoi(poi);
     renderTrackingPanel(poi);
+    // View-mode only (this function bails in edit mode): crosshairing a POI
+    // selects its route, deselecting any other — preferring the POI's linked
+    // route, else the route its location sits on. setSelectedRoute also switches
+    // the displayed profile, if the panel is open.
+    const rid = currentRoute ? currentRoute.id : nearestRouteIdToLatLng([poi.lat, poi.lng]);
+    if (rid != null) setSelectedRoute(rid);
   } else {
     clearTrackingPanel();
   }
