@@ -50,6 +50,7 @@
     <input type="file" id="bulk-file-input" multiple accept="image/*" style="display:none"/>
     <button id="btn-enter-route-edit" class="toolbar-btn hidden" title="Draw routes on the map">Edit Routes</button>
     <button id="btn-edit-mode" class="toolbar-btn" title="Add notes and photos to the map">Edit</button>
+    <button id="btn-profile" class="toolbar-btn" disabled title="Show elevation profile of the selected route">Profile</button>
     <button id="btn-tracking" class="toolbar-btn" title="Show POI info as you move map">Track</button>
     <button id="btn-logout" class="toolbar-btn hidden">Sign Out</button>
     <button id="btn-help" class="toolbar-btn toolbar-btn-help" title="Help" aria-label="Help">?</button>
@@ -58,6 +59,7 @@
   <div id="mobile-menu" class="mobile-menu hidden">
     <button id="mob-tracking"          class="mobile-menu-item" title="Show POI info as you move the map">Track</button>
     <button id="mob-edit-mode"         class="mobile-menu-item">Edit</button>
+    <button id="mob-profile"           class="mobile-menu-item" disabled>Profile</button>
     <button id="mob-enter-route-edit"  class="mobile-menu-item hidden">Edit Routes</button>
     <button id="mob-bulk-upload"       class="mobile-menu-item hidden">Upload Photos</button>
     <button id="mob-logout"            class="mobile-menu-item hidden">Sign Out</button>
@@ -249,6 +251,19 @@
       <div style="flex:1"></div>
       <button id="btn-help-ok" class="btn-primary">Got it</button>
     </div>
+  </div>
+</div>
+
+<!-- Route elevation profile — docked bottom panel -->
+<div id="profile-panel" class="hidden">
+  <div id="profile-header">
+    <h2 id="profile-title">Elevation profile</h2>
+    <div id="profile-stats" class="profile-stats"></div>
+    <button class="close-btn" id="profile-close" aria-label="Close">&#x2715;</button>
+  </div>
+  <div id="profile-chart-wrap" class="profile-chart-wrap">
+    <canvas id="profile-canvas"></canvas>
+    <div id="profile-msg" class="profile-msg hidden"></div>
   </div>
 </div>
 

@@ -6,6 +6,7 @@ const crypto  = require('crypto');
 const sharp   = require('sharp');
 const requireAuth = require('../middleware/requireAuth');
 const db = require('../db');
+const elevation = require('../elevation');
 
 const router = express.Router();
 const IS_AWS = !!process.env.PHOTOS_BUCKET;
@@ -299,6 +300,68 @@ router.put('/route-nodes/:id', requireAuth, wrap(async (req, res) => {
 
 router.delete('/route-nodes/:id', requireAuth, wrap(async (req, res) => {
   res.json(await Promise.resolve(db.deleteRouteNode(parseId(req.params.id))));
+}));
+
+// Elevation profile: densify the route's nodes into evenly-spaced sample points,
+// look up each point's elevation from MapTiler Terrain-RGB tiles, and return the
+// distance/elevation series. Read-only (no auth) — profiles are viewable like the
+// map itself. See elevation.js for the decode.
+router.get('/routes/:id/profile', wrap(async (req, res) => {
+  if (!process.env.MAPTILER_KEY) return res.status(503).json({ error: 'Elevation data unavailable' });
+  const route = await Promise.resolve(db.getRouteById(parseId(req.params.id)));
+  if (!route) return res.status(404).json({ error: 'Not found' });
+  const nodes = route.nodes || [];
+  if (nodes.length < 2) return res.status(400).json({ error: 'Route needs at least 2 nodes' });
+
+  const STEP = 30;         // metres between samples
+  const MAX_SAMPLES = 500; // cap work for very long routes (widens the step instead)
+
+  // Total length first, so a long route widens its step rather than blowing the cap.
+  let total = 0;
+  for (let i = 1; i < nodes.length; i++) {
+    total += db.haversineMeters(nodes[i - 1].lat, nodes[i - 1].lng, nodes[i].lat, nodes[i].lng);
+  }
+  const step = Math.max(STEP, total / MAX_SAMPLES);
+
+  // Walk each segment, emitting samples every `step` metres with cumulative distance.
+  // POI-linked nodes are recorded at their distance so the chart can tick them.
+  const samples = [{ lat: nodes[0].lat, lng: nodes[0].lng, dist: 0 }];
+  const pois = [];
+  if (nodes[0].poi_id != null) pois.push({ dist: 0, poi_id: nodes[0].poi_id });
+  let acc = 0;
+  for (let i = 1; i < nodes.length; i++) {
+    const a = nodes[i - 1], b = nodes[i];
+    const segLen = db.haversineMeters(a.lat, a.lng, b.lat, b.lng);
+    const nSteps = segLen > step ? Math.floor(segLen / step) : 0;
+    for (let s = 1; s <= nSteps; s++) {
+      const f = (s * step) / segLen;
+      if (f >= 1) break;
+      samples.push({ lat: a.lat + (b.lat - a.lat) * f, lng: a.lng + (b.lng - a.lng) * f, dist: acc + s * step });
+    }
+    acc += segLen;
+    samples.push({ lat: b.lat, lng: b.lng, dist: acc });
+    if (b.poi_id != null) pois.push({ dist: acc, poi_id: b.poi_id });
+  }
+
+  // MapTiler keys are usually referrer-restricted. Send the app's own origin so the
+  // request matches the whitelisted domain. MAPTILER_REFERER overrides this for
+  // deployments where the Lambda's Host header differs from the browser origin
+  // (e.g. behind CloudFront / a custom domain).
+  const referer = process.env.MAPTILER_REFERER || `${req.protocol}://${req.get('host')}/`;
+  let eles;
+  try {
+    eles = await elevation.sampleElevations(samples, referer);
+  } catch {
+    return res.status(502).json({ error: 'Elevation lookup failed' });
+  }
+
+  const points = samples.map((s, i) => ({
+    dist: Math.round(s.dist),
+    ele: eles[i] == null ? null : Math.round(eles[i] * 10) / 10,
+    lat: s.lat,
+    lng: s.lng,
+  }));
+  res.json({ points, pois, total: Math.round(total) });
 }));
 
 module.exports = router;

@@ -10,6 +10,7 @@ body, html {
 #map {
   position: fixed;
   inset: 0;
+  bottom: var(--profile-height, 0); /* shrunk when the elevation profile panel is open */
   z-index: 0;
 }
 
@@ -114,10 +115,9 @@ body, html {
   border-top-left-radius: 8px;
 }
 
+/* Narrow windows: fold the top-right action buttons into the kebab dropdown. */
 @media (max-width: 600px) {
   .toolbar-btn { font-size: 0.8rem; padding: 4px 10px; }
-}
-@media (max-width: 480px) {
   #dir-pref .dir-btn    { display: none; }
   .dir-pref-select      { display: block; }
   #toolbar { height: auto; padding: 6px 12px 8px; }
@@ -158,6 +158,12 @@ body, html {
 .toolbar-btn.active {
   background: #2563eb;
   border-color: #2563eb;
+}
+.toolbar-btn:disabled,
+.toolbar-btn:disabled:hover {
+  opacity: 0.4;
+  background: rgba(255,255,255,0.08);
+  cursor: default;
 }
 .toolbar-btn-help {
   width: 30px; height: 30px;
@@ -333,6 +339,64 @@ body, html {
   position: relative;
 }
 .modal-large { max-width: 640px; }
+
+/* Elevation profile — docked bottom panel */
+#profile-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1100;
+  height: 17vh;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  background: #1e1e32;
+  border-top: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 -4px 20px rgba(0,0,0,0.4);
+  color: #e8e8f0;
+  padding: 10px 14px 12px;
+}
+#profile-panel.hidden { display: none; }
+
+#profile-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+#profile-header h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  margin: 0;
+  white-space: nowrap;
+}
+#profile-header .close-btn { margin-left: auto; align-self: flex-start; }
+
+.profile-stats {
+  color: #b8b8d0;
+  font-size: 0.85rem;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.profile-stats b { color: #fff; font-weight: 600; }
+
+.profile-chart-wrap { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; }
+#profile-canvas { width: 100%; height: 100%; display: block; }
+.profile-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #b8b8d0;
+  text-align: center;
+  padding: 20px;
+}
+.profile-msg.hidden { display: none; }
 
 .modal h2 {
   font-size: 1.2rem;
@@ -880,7 +944,7 @@ body, html {
    visible map area. */
 body.tracking-portrait #layer-switcher {
   top: auto; right: auto;
-  bottom: 30px; left: 10px;
+  bottom: calc(30px + var(--profile-height, 0px)); left: 10px;
 }
 
 .layer-btn {
@@ -1081,12 +1145,16 @@ body.tracking-portrait #layer-switcher {
   overflow: hidden;
   color: #e8e8f0;
 }
+/* Photo panel = one third of the space between the toolbar and the profile panel
+   (the map gets the other two thirds), so the 1:2 ratio holds whether or not the
+   elevation profile is open. */
 body.tracking-portrait #tracking-panel {
   top: var(--toolbar-height, 52px); left: 0; right: 0;
-  height: 33vh;
+  height: calc((100vh - var(--toolbar-height, 52px) - var(--profile-height, 0px)) / 3);
 }
 body.tracking-landscape #tracking-panel {
-  top: var(--toolbar-height, 52px); left: 0; width: 50%; bottom: 0;
+  top: var(--toolbar-height, 52px); left: 0; width: 50%;
+  bottom: var(--profile-height, 0); /* sit above the profile panel, not behind it */
 }
 
 .tracking-empty {
@@ -1199,10 +1267,15 @@ body.tracking-landscape #tracking-panel {
   pointer-events: none;
 }
 /* In tracking mode the panel overlays the top (portrait) or left (landscape);
-   offset the crosshair to the centre of the visible map area beyond it.
-   Portrait panel = 33vh below the toolbar, so visible map runs from
-   (toolbar + 33vh) to 100vh — its centre sits at toolbar/2 + 66.5vh. */
-body.tracking-portrait  #crosshair { top:  calc(var(--toolbar-height, 52px) / 2 + 66.5vh); }
+   centre the crosshair in the visible map area beyond it. In portrait the photo
+   panel is the top third and the map the bottom two thirds of the space between
+   the toolbar (T) and the profile panel (height P): the map runs from
+   (T + (100vh−T−P)/3) to (100vh−P), whose centre is (T + 2·100vh − 2P)/3.
+   (#crosshair is absolute within #map, so landscape's top:50% already tracks the
+   shrunk map.) */
+body.tracking-portrait  #crosshair {
+  top: calc(var(--toolbar-height, 52px) / 3 + 66.667vh - var(--profile-height, 0px) * 2 / 3);
+}
 body.tracking-landscape #crosshair { left: 75%; }
 #crosshair::before, #crosshair::after {
   content: '';

@@ -1432,6 +1432,7 @@ function redrawPolyline(routeId) {
   const poly = routePolylines[routeId];
   if (!route || !poly) return;
   poly.setLatLngs(route.nodes.map(n => [n.lat, n.lng]));
+  delete profileCache[routeId]; // geometry changed — stale elevation series
 }
 
 function setupNodeMarkerEvents(marker, node) {
@@ -1496,7 +1497,9 @@ function renderRoute(route) {
   poly.on('click', async (e) => {
     L.DomEvent.stopPropagation(e);
     e.originalEvent.stopPropagation();
-    if (!routeEditMode) return;
+    // View mode: clicking a route selects it (enables the Profile button); if the
+    // profile panel is already open, switch it to this route.
+    if (!routeEditMode) { setSelectedRoute(route.id); return; }
     const liveRoute = routes[route.id];
     if (!liveRoute || liveRoute.nodes.length < 2) return;
 
@@ -1655,6 +1658,7 @@ const btnSplitRoute      = $('btn-split-route');
 const btnDeleteRoute     = $('btn-delete-route');
 const btnExportGpx       = $('btn-export-gpx');
 const btnExportKml       = $('btn-export-kml');
+const btnProfile         = $('btn-profile');
 
 function setActiveRoute(routeId) {
   activeRouteId = routeId;
@@ -1778,6 +1782,7 @@ function selectNode(nodeId) {
   btnExportGpx.disabled = false;
   btnExportKml.disabled = false;
   currentRoute = routes[nodeRouteId[nodeId]] || null;
+  setSelectedRoute(nodeRouteId[nodeId]);
   routeColorInput.value = currentRoute?.color || '#ff69b4';
   routeColorInput.disabled = false;
   $('dir1-name-input').value = currentRoute?.dir1_name || '';
@@ -1802,6 +1807,7 @@ function deselectNode() {
   btnExportGpx.disabled = true;
   btnExportKml.disabled = true;
   routeColorInput.disabled = true;
+  setSelectedRoute(null);
   $('dir-name-fields').classList.add('hidden');
 }
 
@@ -2198,6 +2204,231 @@ function exportSelectedRouteKml() {
   downloadBlob(buildKml(route), `${safeRouteFilename(route)}.kml`, 'application/vnd.google-earth.kml+xml');
 }
 
+// ── Elevation profile ─────────────────────────────────────────────────────────
+
+const profilePanel  = $('profile-panel');
+const profileCanvas  = $('profile-canvas');
+const profileMsg     = $('profile-msg');
+const profileStats   = $('profile-stats');
+const profileTitle   = $('profile-title');
+const profileCache   = {}; // routeId -> profile JSON (cleared when a route's nodes change)
+let   profileDrawn   = null; // { data, route } last drawn — for redraw on resize
+let   selectedRouteId = null; // route chosen for the profile (tap a route line / select a node)
+
+// Select a route as the Profile button's target: highlight it, enable the button,
+// and — if the panel is already open — switch it to show this route.
+function setSelectedRoute(id) {
+  selectedRouteId = (id != null && routes[id]) ? id : null;
+  for (const rid in routePolylines) {
+    const sel = String(rid) === String(selectedRouteId);
+    routePolylines[rid].setStyle({ opacity: sel ? 0.85 : 0.5 });
+  }
+  updateProfileBtn();
+  if (selectedRouteId && !profilePanel.classList.contains('hidden')) showRouteProfile(selectedRouteId);
+}
+
+// Reflect selection (enabled) + open state (active) on the Profile button; the
+// mobile-menu twin is mirrored by syncMobileMenu.
+function updateProfileBtn() {
+  btnProfile.disabled = selectedRouteId == null;
+  btnProfile.classList.toggle('active', !profilePanel.classList.contains('hidden'));
+  syncMobileMenu();
+}
+
+// Profile button: toggle the panel for the selected route.
+function toggleProfile() {
+  if (selectedRouteId == null) return;
+  if (profilePanel.classList.contains('hidden')) showRouteProfile(selectedRouteId);
+  else closeProfile();
+}
+btnProfile.addEventListener('click', toggleProfile);
+
+// Shrink the map from the bottom by the panel's height (pushing it up rather than
+// overlaying it), then let Leaflet re-render to the new size.
+function updateProfileMapPush() {
+  const h = profilePanel.classList.contains('hidden') ? 0 : profilePanel.offsetHeight;
+  document.documentElement.style.setProperty('--profile-height', h + 'px');
+  if (typeof map !== 'undefined' && map) map.invalidateSize();
+}
+
+function closeProfile() {
+  profilePanel.classList.add('hidden');
+  profileDrawn = null;
+  updateProfileMapPush();
+  updateProfileBtn();
+}
+
+$('profile-close').addEventListener('click', closeProfile);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !profilePanel.classList.contains('hidden')) closeProfile();
+});
+
+// Re-fit when the panel size changes (window resize / device rotation).
+let profileResizeRAF = null;
+window.addEventListener('resize', () => {
+  if (profilePanel.classList.contains('hidden') || !profileDrawn) return;
+  if (profileResizeRAF) cancelAnimationFrame(profileResizeRAF);
+  profileResizeRAF = requestAnimationFrame(() => {
+    updateProfileMapPush();
+    drawProfile(profileDrawn.data, profileDrawn.route);
+  });
+});
+
+function setProfileMsg(text) {
+  profileMsg.textContent = text;
+  profileMsg.classList.remove('hidden');
+  const ctx = profileCanvas.getContext('2d');
+  ctx.clearRect(0, 0, profileCanvas.width, profileCanvas.height);
+  profileStats.textContent = '';
+}
+
+async function showRouteProfile(routeId) {
+  const route = routes[routeId];
+  if (!route) return;
+  profileTitle.textContent = (route.name ? route.name + ' — ' : '') + 'Elevation profile';
+  profileStats.textContent = '';
+  profilePanel.classList.remove('hidden');
+  updateProfileMapPush();
+  updateProfileBtn();
+  setProfileMsg('Loading…');
+
+  let data = profileCache[routeId];
+  if (!data) {
+    try {
+      const res = await fetch('/api/routes/' + routeId + '/profile');
+      if (res.status === 503) return setProfileMsg('Elevation data is not available (map terrain key not configured).');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        return setProfileMsg(err.error || 'Could not load the elevation profile.');
+      }
+      data = await res.json();
+      profileCache[routeId] = data;
+    } catch {
+      return setProfileMsg('Could not load the elevation profile.');
+    }
+  }
+  if (profilePanel.classList.contains('hidden')) return; // closed while loading
+  profileMsg.classList.add('hidden');
+  drawProfile(data, route);
+}
+
+// Cumulative ascent / descent over the (null-skipping) elevation series.
+function computeAscentDescent(points) {
+  let asc = 0, desc = 0, prev = null;
+  for (const p of points) {
+    if (p.ele == null) continue;
+    if (prev != null) { const d = p.ele - prev; if (d > 0) asc += d; else desc -= d; }
+    prev = p.ele;
+  }
+  return { asc, desc };
+}
+
+function drawProfile(data, route) {
+  const points = data.points.filter(p => p.ele != null);
+  if (points.length < 2) return setProfileMsg('Not enough elevation data to draw a profile.');
+  profileDrawn = { data, route };
+
+  const eles = points.map(p => p.ele);
+  const yMin = Math.min(...eles), yMax = Math.max(...eles);
+  const xMax = data.total || points[points.length - 1].dist;
+  const { asc, desc } = computeAscentDescent(data.points);
+
+  profileStats.innerHTML =
+    `Distance <b>${(xMax / 1000).toFixed(2)} km</b>` +
+    ` &nbsp; Ascent <b>${Math.round(asc)} m</b>` +
+    ` &nbsp; Descent <b>${Math.round(desc)} m</b>` +
+    ` &nbsp; Range <b>${Math.round(yMin)}–${Math.round(yMax)} m</b>`;
+
+  // Size the canvas to its container (the flex chart area) for the device pixel
+  // ratio so text/lines stay crisp. CSS sets the canvas to 100% width/height, so
+  // clientWidth/Height reflect the panel's available space (bounded 20–50vh).
+  const cssW = profileCanvas.clientWidth || 560;
+  const cssH = profileCanvas.clientHeight || 180;
+  const dpr = window.devicePixelRatio || 1;
+  profileCanvas.width = cssW * dpr;
+  profileCanvas.height = cssH * dpr;
+  const ctx = profileCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const padL = 46, padR = 12, padT = 12, padB = 30;
+  const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
+
+  // Pad the y range a little; pin to 0 if the route never goes below sea level.
+  let lo = yMin, hi = yMax;
+  if (hi - lo < 10) { hi += 5; lo -= 5; }
+  const p = (hi - lo) * 0.1; lo -= p; hi += p;
+  if (lo < 0 && yMin >= 0) lo = 0;
+
+  const X = d => padL + (d / xMax) * plotW;
+  const Y = e => padT + (1 - (e - lo) / (hi - lo)) * plotH;
+  const baseY = padT + plotH;
+
+  // Gridlines + axis labels
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillStyle = '#8888a0';
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (const t of niceTicks(lo, hi, 4)) {
+    const y = Y(t);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(cssW - padR, y); ctx.stroke();
+    ctx.fillText(Math.round(t) + ' m', padL - 6, y);
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (const t of niceTicks(0, xMax, 5)) {
+    ctx.fillText((t / 1000).toFixed(t >= 1000 ? 1 : 2), X(t), baseY + 6);
+  }
+
+  const color = route.color || '#4aa3df';
+
+  // Area fill under the curve
+  ctx.beginPath();
+  ctx.moveTo(X(points[0].dist), Y(points[0].ele));
+  for (const pt of points) ctx.lineTo(X(pt.dist), Y(pt.ele));
+  ctx.lineTo(X(points[points.length - 1].dist), baseY);
+  ctx.lineTo(X(points[0].dist), baseY);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, padT, 0, baseY);
+  grad.addColorStop(0, hexA(color, 0.45));
+  grad.addColorStop(1, hexA(color, 0.05));
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Profile line
+  ctx.beginPath();
+  ctx.moveTo(X(points[0].dist), Y(points[0].ele));
+  for (const pt of points) ctx.lineTo(X(pt.dist), Y(pt.ele));
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+
+  // POI ticks along the baseline
+  ctx.strokeStyle = hexA(color, 0.9);
+  ctx.lineWidth = 1.5;
+  for (const pm of (data.pois || [])) {
+    const x = X(pm.dist);
+    ctx.beginPath(); ctx.moveTo(x, baseY); ctx.lineTo(x, baseY + 4); ctx.stroke();
+  }
+}
+
+// Evenly-spaced "nice" tick values spanning [lo, hi] (~count of them).
+function niceTicks(lo, hi, count) {
+  const span = (hi - lo) || 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(span / count)));
+  const norm = span / count / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  const ticks = [];
+  for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-6; t += step) ticks.push(t);
+  return ticks;
+}
+
+// "#rrggbb" + alpha (0–1) -> "rgba(...)"; falls back to the default blue.
+function hexA(hex, a) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return `rgba(74,163,223,${a})`;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
 document.addEventListener('keydown', (e) => {
   if (!routeEditMode) return;
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
@@ -2561,6 +2792,7 @@ function syncMobileMenu() {
   const pairs = [
     ['mob-tracking', 'btn-tracking'],
     ['mob-edit-mode', 'btn-edit-mode'],
+    ['mob-profile', 'btn-profile'],
     ['mob-bulk-upload', 'btn-bulk-upload'],
     ['mob-enter-route-edit', 'btn-enter-route-edit'],
     ['mob-logout', 'btn-logout'],
@@ -2570,6 +2802,7 @@ function syncMobileMenu() {
     mob.classList.toggle('hidden', desk.classList.contains('hidden'));
     mob.textContent = desk.textContent;
     mob.classList.toggle('active', desk.classList.contains('active'));
+    mob.disabled = desk.disabled;
   }
   // Camera button shares the same auth/tracking triggers as the mobile menu.
   if (typeof updateCameraBtn === 'function') updateCameraBtn();
@@ -2583,7 +2816,7 @@ $('btn-mobile-menu').addEventListener('click', (e) => {
   if (opening) syncMobileMenu();
 });
 
-['mob-tracking', 'mob-edit-mode', 'mob-bulk-upload', 'mob-enter-route-edit', 'mob-logout', 'mob-help'].forEach(id => {
+['mob-tracking', 'mob-edit-mode', 'mob-profile', 'mob-bulk-upload', 'mob-enter-route-edit', 'mob-logout', 'mob-help'].forEach(id => {
   $(id).addEventListener('click', () => {
     $('mobile-menu').classList.add('hidden');
     $(id.replace('mob-', 'btn-')).click();
