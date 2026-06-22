@@ -2249,6 +2249,9 @@ function updateProfileMapPush() {
   const h = profilePanel.classList.contains('hidden') ? 0 : profilePanel.offsetHeight;
   document.documentElement.style.setProperty('--profile-height', h + 'px');
   if (typeof map !== 'undefined' && map) map.invalidateSize();
+  // The tracking panel resizes with --profile-height; re-render the current photo
+  // so its arrow marker tracks the new image size (without restarting the slideshow).
+  if (trackingMode && trackingViewer.photos.length) trackingViewer.rerender();
 }
 
 function closeProfile() {

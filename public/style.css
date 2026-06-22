@@ -918,8 +918,10 @@ body, html {
   box-shadow: 0 2px 8px rgba(0,0,0,0.4);
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.live-track-btn { bottom: 25vh; }
-.camera-btn     { bottom: calc(25vh + 56px); }
+/* Lift by --profile-height so they keep clear of the bottom-right zoom control,
+   which rises with the map when the elevation profile panel is open. */
+.live-track-btn { bottom: calc(25vh + var(--profile-height, 0px)); }
+.camera-btn     { bottom: calc(25vh + 56px + var(--profile-height, 0px)); }
 .live-track-btn.hidden, .camera-btn.hidden { display: none; }
 .live-track-btn:hover, .camera-btn:hover { background: rgba(15,15,30,1); color: #fff; }
 .live-track-btn.active {
