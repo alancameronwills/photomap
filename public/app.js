@@ -2206,13 +2206,18 @@ function exportSelectedRouteKml() {
 
 // ── Elevation profile ─────────────────────────────────────────────────────────
 
-const profilePanel  = $('profile-panel');
-const profileCanvas  = $('profile-canvas');
-const profileMsg     = $('profile-msg');
-const profileStats   = $('profile-stats');
-const profileTitle   = $('profile-title');
-const profileCache   = {}; // routeId -> profile JSON (cleared when a route's nodes change)
-let   profileDrawn   = null; // { data, route } last drawn — for redraw on resize
+const profilePanel    = $('profile-panel');
+const profileCanvas   = $('profile-canvas');
+const profileMsg      = $('profile-msg');
+const profileStats    = $('profile-stats');
+const profileTitle    = $('profile-title');
+const profileChartWrap = $('profile-chart-wrap');
+const profileCursor   = $('profile-cursor');
+const profileCursorLabel = $('profile-cursor-label');
+const profileCache    = {}; // routeId -> profile JSON (cleared when a route's nodes change)
+let   profileDrawn    = null; // { data, route } last drawn — for redraw on resize
+let   profileChart    = null; // { padL, plotW, xMax, points } chart geometry for the cursor
+let   elevationMode   = false; // dragging the chart to scrub the route under the crosshair
 let   selectedRouteId = null; // route chosen for the profile (tap a route line / track a POI / select a node)
 const SELECTED_ROUTE_COLOR = '#b30000'; // deep red for the selected route
 
@@ -2267,6 +2272,7 @@ function updateProfileMapPush() {
 }
 
 function closeProfile() {
+  exitElevationMode();
   profilePanel.classList.add('hidden');
   profileDrawn = null;
   updateProfileMapPush();
@@ -2296,6 +2302,87 @@ function setProfileMsg(text) {
   ctx.clearRect(0, 0, profileCanvas.width, profileCanvas.height);
   profileStats.textContent = '';
 }
+
+// ── Elevation mode: scrub the chart to drive the map ──────────────────────────
+// Clicking/touching the chart enters Elevation mode (turning Track off). The
+// vertical cursor follows the pointer and the map pans so the matching point on
+// the route sits under the crosshair (no POI detection). A click/tap outside the
+// chart leaves the mode.
+
+function enterElevationMode() {
+  if (elevationMode) return;
+  if (trackingMode) setTrackingMode(false);
+  elevationMode = true;
+  $('crosshair').classList.remove('hidden'); // reuse the crosshair, sans POI tracking
+}
+
+function exitElevationMode() {
+  if (!elevationMode) return;
+  elevationMode = false;
+  $('crosshair').classList.add('hidden');
+  profileCursor.classList.add('hidden');
+  profileCursorLabel.classList.add('hidden');
+}
+
+// Interpolate the route point (lat/lng/ele) at a cumulative distance (metres).
+// ele may be null on a side, in which case the other side's value is used.
+function pointAtDistance(dist) {
+  const pts = profileChart?.points;
+  if (!pts || !pts.length) return null;
+  let a = pts[0], b = pts[0], f = 0;
+  if (dist > pts[0].dist) {
+    let i = 1;
+    while (i < pts.length && dist > pts[i].dist) i++;
+    if (i >= pts.length) { a = b = pts[pts.length - 1]; }
+    else { a = pts[i - 1]; b = pts[i]; f = (dist - a.dist) / ((b.dist - a.dist) || 1); }
+  }
+  let ele = null;
+  if (a.ele != null && b.ele != null) ele = a.ele + (b.ele - a.ele) * f;
+  else ele = a.ele != null ? a.ele : b.ele;
+  return { lat: a.lat + (b.lat - a.lat) * f, lng: a.lng + (b.lng - a.lng) * f, ele };
+}
+
+// Place the cursor at a client-x, show the elevation readout, and pan the map to
+// the matching route point.
+function moveElevationCursor(clientX) {
+  if (!profileChart) return;
+  const rect = profileCanvas.getBoundingClientRect();
+  const { padL, plotW, padT, plotH, lo, hi, xMax } = profileChart;
+  const x = Math.max(padL, Math.min(padL + plotW, clientX - rect.left));
+  profileCursor.style.left = x + 'px';
+  profileCursor.classList.remove('hidden');
+  const pt = pointAtDistance(((x - padL) / plotW) * xMax);
+  if (!pt) return;
+  if (pt.ele != null) {
+    const y = padT + (1 - (pt.ele - lo) / (hi - lo)) * plotH;
+    profileCursorLabel.textContent = Math.round(pt.ele) + ' m';
+    profileCursorLabel.style.left = x + 'px';
+    profileCursorLabel.style.top = Math.max(2, y - 22) + 'px';
+    profileCursorLabel.classList.remove('hidden');
+  } else {
+    profileCursorLabel.classList.add('hidden');
+  }
+  const { x: cx, y: cy } = getCrosshairPixel();
+  const px = map.latLngToContainerPoint([pt.lat, pt.lng]);
+  map.panBy([px.x - cx, px.y - cy], { animate: false });
+}
+
+profileChartWrap.addEventListener('pointerdown', (e) => {
+  if (editMode) return; // elevation scrubbing is a view-mode feature
+  enterElevationMode();
+  try { profileChartWrap.setPointerCapture(e.pointerId); } catch {}
+  moveElevationCursor(e.clientX);
+});
+// Mouse hover or touch drag moves the cursor (touch pointermove only fires while
+// in contact, which is exactly the "drag" we want). Pointer capture keeps it
+// firing even if the drag wanders off the short chart.
+profileChartWrap.addEventListener('pointermove', (e) => {
+  if (elevationMode) moveElevationCursor(e.clientX);
+});
+// A click/tap anywhere outside the chart leaves Elevation mode.
+document.addEventListener('pointerdown', (e) => {
+  if (elevationMode && !profileChartWrap.contains(e.target)) exitElevationMode();
+});
 
 async function showRouteProfile(routeId) {
   const route = routes[routeId];
@@ -2377,6 +2464,10 @@ function drawProfile(data, route) {
   const X = d => padL + (d / xMax) * plotW;
   const Y = e => padT + (1 - (e - lo) / (hi - lo)) * plotH;
   const baseY = padT + plotH;
+
+  // Geometry for the Elevation-mode cursor: canvas x -> distance -> lat/lng/ele,
+  // and ele -> y for the readout label.
+  profileChart = { padL, plotW, padT, plotH, lo, hi, xMax, points: data.points };
 
   // Gridlines + axis labels
   ctx.font = '11px system-ui, sans-serif';
