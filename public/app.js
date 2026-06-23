@@ -726,6 +726,7 @@ function setEditMode(on) {
   editMode = on;
   editIndicator.classList.toggle('hidden', !on);
   $('btn-bulk-upload').classList.toggle('hidden', !on);
+  $('btn-import-gpx').classList.toggle('hidden', !on);
   $('btn-enter-route-edit').classList.toggle('hidden', !on);
   btnEditMode.classList.toggle('active', on);
   document.getElementById('map').classList.toggle('edit-active', on);
@@ -1397,6 +1398,95 @@ function showUploadToast(msg, progress) {
 function hideUploadToast() {
   uploadToast.classList.add('hidden');
   uploadFill.style.width = '0';
+}
+
+// ── GPX import (edit mode toolbar) ────────────────────────────────────────────
+const gpxFileInput = $('gpx-file-input');
+$('btn-import-gpx').addEventListener('click', () => gpxFileInput.click());
+gpxFileInput.addEventListener('change', () => {
+  if (gpxFileInput.files.length > 0) {
+    importGpxFiles(Array.from(gpxFileInput.files));
+    gpxFileInput.value = '';
+  }
+});
+
+// Distinct colours so successively imported routes don't all look the same.
+const GPX_IMPORT_PALETTE = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#ca8a04'];
+let gpxImportColorIdx = 0;
+function nextGpxImportColor() { return GPX_IMPORT_PALETTE[gpxImportColorIdx++ % GPX_IMPORT_PALETTE.length]; }
+
+// Parse a GPX document into { name, trackPoints[], waypoints[] }. Track points
+// come from <trkpt> (falling back to <rtept>); waypoints from <wpt>. Only the
+// route name and per-waypoint name/desc text are extracted — photos referenced
+// by <link> are not imported.
+function parseGpx(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror') || !doc.documentElement) throw new Error('not a valid GPX file');
+  const ll  = el => ({ lat: parseFloat(el.getAttribute('lat')), lng: parseFloat(el.getAttribute('lon')) });
+  const txt = (el, tag) => { const n = el && el.getElementsByTagName(tag)[0]; return n ? n.textContent.trim() : ''; };
+  const tags = tag => [...doc.getElementsByTagName(tag)];
+
+  let pts = tags('trkpt');
+  if (pts.length === 0) pts = tags('rtept');
+  const trackPoints = pts.map(ll).filter(p => isFinite(p.lat) && isFinite(p.lng));
+
+  const waypoints = tags('wpt').map(w => ({
+    ...ll(w),
+    name: txt(w, 'name'),
+    desc: txt(w, 'desc') || txt(w, 'cmt'),
+  })).filter(p => isFinite(p.lat) && isFinite(p.lng));
+
+  const name = txt(doc.getElementsByTagName('metadata')[0], 'name') ||
+               txt(doc.getElementsByTagName('trk')[0], 'name') ||
+               txt(doc.getElementsByTagName('rte')[0], 'name') || '';
+  return { name, trackPoints, waypoints };
+}
+
+async function importGpxFiles(files) {
+  showUploadToast('Reading GPX…', 5);
+  const bounds = [];
+  let nRoutes = 0, nPois = 0;
+  try {
+    for (const file of files) {
+      let parsed;
+      try { parsed = parseGpx(await file.text()); }
+      catch (e) { alert(`${file.name}: ${e.message}`); continue; }
+      if (!parsed.trackPoints.length && !parsed.waypoints.length) {
+        alert(`${file.name}: no track or waypoints found`);
+        continue;
+      }
+
+      uploadToastMsg.textContent = `Importing ${file.name}…`;
+      const result = await api('POST', '/import-gpx', {
+        project: currentProjectId,
+        name: parsed.name || file.name.replace(/\.gpx$/i, ''),
+        color: nextGpxImportColor(),
+        trackPoints: parsed.trackPoints,
+        waypoints: parsed.waypoints,
+      });
+
+      for (const poi of (result.pois || [])) { pois[poi.id] = poi; bounds.push([poi.lat, poi.lng]); nPois++; }
+      if (result.route) {
+        routes[result.route.id] = result.route;
+        renderRoute(result.route);
+        for (const n of result.route.nodes) bounds.push([n.lat, n.lng]);
+        nRoutes++;
+      }
+      // Add POI markers now that their linked route is in place (so the
+      // connected/stray border resolves correctly).
+      for (const poi of (result.pois || [])) addOrUpdateMarker(poi);
+    }
+    refreshPoiConnectionStyles();
+
+    if (bounds.length) map.fitBounds(L.latLngBounds(bounds).pad(0.2));
+    uploadFill.style.width = '100%';
+    uploadToastMsg.textContent =
+      `Imported ${nRoutes} route${nRoutes !== 1 ? 's' : ''}, ${nPois} point${nPois !== 1 ? 's' : ''}`;
+    setTimeout(hideUploadToast, 1600);
+  } catch (err) {
+    hideUploadToast();
+    alert('GPX import failed: ' + err.message);
+  }
 }
 
 // ── Drop zone helper ──────────────────────────────────────────────────────────
@@ -3270,6 +3360,7 @@ function syncMobileMenu() {
     ['mob-edit-mode', 'btn-edit-mode'],
     ['mob-profile', 'btn-profile'],
     ['mob-bulk-upload', 'btn-bulk-upload'],
+    ['mob-import-gpx', 'btn-import-gpx'],
     ['mob-enter-route-edit', 'btn-enter-route-edit'],
     ['mob-logout', 'btn-logout'],
   ];
@@ -3292,7 +3383,7 @@ $('btn-mobile-menu').addEventListener('click', (e) => {
   if (opening) syncMobileMenu();
 });
 
-['mob-tracking', 'mob-edit-mode', 'mob-profile', 'mob-bulk-upload', 'mob-enter-route-edit', 'mob-logout', 'mob-help'].forEach(id => {
+['mob-tracking', 'mob-edit-mode', 'mob-profile', 'mob-bulk-upload', 'mob-import-gpx', 'mob-enter-route-edit', 'mob-logout', 'mob-help'].forEach(id => {
   $(id).addEventListener('click', () => {
     $('mobile-menu').classList.add('hidden');
     $(id.replace('mob-', 'btn-')).click();

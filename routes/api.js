@@ -276,6 +276,80 @@ router.post('/upload-photos', requireAuth, upload.array('photos', 100), wrap(asy
   res.json({ pois: resultPois });
 }));
 
+// ── GPX import ────────────────────────────────────────────────────────────────
+// The client parses the GPX in the browser (DOMParser) and posts structured data:
+//   { name, color, trackPoints:[{lat,lng}], waypoints:[{lat,lng,name,desc}] }
+// We create a route from the track and a POI for each text-bearing waypoint,
+// linking every POI to a route node at its location. A waypoint that coincides
+// (≤ WAYPOINT_SNAP_M) with a track point reuses that node rather than inserting a
+// new one, so round-tripping our own export reconstructs the original nodes.
+const WAYPOINT_SNAP_M = 8;
+
+router.post('/import-gpx', requireAuth, wrap(async (req, res) => {
+  const projectId = projectOf(req);
+  const name  = (req.body.name  || '').toString().trim() || null;
+  const color = (req.body.color || '').toString().trim() || undefined;
+  const track = (Array.isArray(req.body.trackPoints) ? req.body.trackPoints : [])
+    .map(p => ({ lat: Number(p.lat), lng: Number(p.lng) }))
+    .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  const waypoints = Array.isArray(req.body.waypoints) ? req.body.waypoints : [];
+
+  // 1. Create a POI for every waypoint that carries text.
+  const wpts = [];
+  for (const w of waypoints) {
+    const lat = Number(w.lat), lng = Number(w.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const title = (w.name || '').toString().trim();
+    const note  = (w.desc || '').toString().trim();
+    if (!title && !note) continue;
+    const poi = await Promise.resolve(db.createPoi(lat, lng, title || null, note || null, projectId));
+    wpts.push({ lat, lng, poiId: poi.id });
+  }
+
+  // 2. Decide where each waypoint node lands relative to the track. A waypoint
+  //    near an existing track point reuses it (linked in place); otherwise it is
+  //    inserted just after its nearest track point. With no track at all, the
+  //    waypoints themselves form the route in file order.
+  const linkAt = new Array(track.length).fill(null); // track index -> waypoint
+  const insertAfter = {};                             // track index -> [waypoint,...]
+  for (const w of wpts) {
+    let bestIdx = -1, bestD = Infinity;
+    for (let i = 0; i < track.length; i++) {
+      const d = db.haversineMeters(w.lat, w.lng, track[i].lat, track[i].lng);
+      if (d < bestD) { bestD = d; bestIdx = i; }
+    }
+    if (bestIdx >= 0 && bestD <= WAYPOINT_SNAP_M && !linkAt[bestIdx]) linkAt[bestIdx] = w;
+    else (insertAfter[bestIdx] = insertAfter[bestIdx] || []).push(w);
+  }
+
+  // 3. Build the ordered node list.
+  const nodeList = [];
+  if (track.length) {
+    for (let i = 0; i < track.length; i++) {
+      const w = linkAt[i];
+      nodeList.push(w ? { lat: w.lat, lng: w.lng, poiId: w.poiId } : { lat: track[i].lat, lng: track[i].lng, poiId: null });
+      for (const ins of (insertAfter[i] || [])) nodeList.push({ lat: ins.lat, lng: ins.lng, poiId: ins.poiId });
+    }
+  } else {
+    for (const ins of (insertAfter[-1] || [])) nodeList.push({ lat: ins.lat, lng: ins.lng, poiId: ins.poiId });
+  }
+
+  // 4. A route needs ≥ 2 nodes to be valid; create it and append nodes in order.
+  let route = null;
+  if (nodeList.length >= 2) {
+    route = await Promise.resolve(db.createRoute(name, color, projectId));
+    for (const n of nodeList) {
+      await Promise.resolve(db.addRouteNode(route.id, n.lat, n.lng, n.poiId || null, false));
+    }
+    route = await Promise.resolve(db.getRouteById(route.id));
+  }
+
+  const pois = await withPhotoUrlsMany(
+    await Promise.all(wpts.map(w => Promise.resolve(db.getPoiById(w.poiId))))
+  );
+  res.json({ route, pois });
+}));
+
 // ── Route endpoints ───────────────────────────────────────────────────────────
 
 router.get('/routes', wrap(async (req, res) => {
