@@ -65,7 +65,10 @@ router.post('/logout', (req, res) => {
 });
 
 router.get('/status', (req, res) => {
-  res.json({ authenticated: !!(req.session && req.session.authenticated) });
+  res.json({
+    authenticated: !!(req.session && req.session.authenticated),
+    email: (req.session && req.session.email) || null,
+  });
 });
 
 // ── Google OAuth ──────────────────────────────────────────────────────────────
@@ -101,6 +104,7 @@ router.get('/google/callback', async (req, res) => {
     const { email } = jwtPayload(tokens.id_token);
     if (!isPermitted(email)) return res.redirect('/?login_error=forbidden');
     req.session.authenticated = true;
+    req.session.email = email;
     await saveSession(req);
     res.redirect('/');
   } catch (e) {
@@ -145,6 +149,7 @@ router.get('/microsoft/callback', async (req, res) => {
     const email = payload.email || payload.preferred_username;
     if (!isPermitted(email)) return res.redirect('/?login_error=forbidden');
     req.session.authenticated = true;
+    req.session.email = email;
     await saveSession(req);
     res.redirect('/');
   } catch (e) {

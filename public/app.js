@@ -222,6 +222,10 @@ let currentRoute = null;        // Route whose direction names apply to the curr
 let previousPoiId = null;       // Most recently opened POI id (for route determination)
 let trackingMode = false;
 let trackingPoiId = null;
+let currentProjectId = null;  // active project (null until resolved at startup)
+let projectsById = {};        // id → project object
+let defaultProjectId = null;  // id of the default project (holds pre-existing data)
+let userEmail = null;         // signed-in user's email (OAuth), for project ownership
 // lightboxViewer and trackingViewer — PhotoDisplay instances, created after DOM refs below
 
 function getDirName(dir) {
@@ -497,9 +501,11 @@ async function api(method, path, body) {
 async function checkAuth() {
   const data = await fetch('/auth/status').then(r => r.json());
   authenticated = data.authenticated;
+  userEmail = data.email || null;
   if (authenticated) {
     btnLogout.classList.remove('hidden');
   }
+  updateProjectDialogAuth();
   syncMobileMenu();
 }
 
@@ -516,11 +522,203 @@ async function login(password) {
 async function logout() {
   await fetch('/auth/logout', { method: 'POST' });
   authenticated = false;
+  userEmail = null;
   setEditMode(false);
   btnEditMode.classList.remove('active');
   btnLogout.classList.add('hidden');
+  updateProjectDialogAuth();
   syncMobileMenu();
 }
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+// POIs and routes are partitioned into projects. A visitor works in one project
+// at a time; the current project is encoded in the URL (?project=<id>) so links
+// are shareable. Anyone may list/switch projects; only signed-in users may
+// create or rename one.
+
+const btnProject     = $('btn-project');
+const projectOverlay = $('project-overlay');
+const projectListEl  = $('project-list');
+const newProjectRow  = $('project-new');
+const newProjectInput = $('new-project-input');
+
+// Query-string fragment scoping a data request to the current project.
+function projectQuery() {
+  return currentProjectId != null ? '?project=' + encodeURIComponent(currentProjectId) : '';
+}
+
+async function loadProjects() {
+  let data;
+  try { data = await fetch('/api/projects').then(r => r.json()); }
+  catch { data = { projects: [], defaultId: null }; }
+  projectsById = {};
+  for (const p of (data.projects || [])) projectsById[p.id] = p;
+  defaultProjectId = data.defaultId;
+  // Resolve the active project from the URL, falling back to the default.
+  const urlProject = new URLSearchParams(location.search).get('project');
+  const match = urlProject != null ? projectsById[urlProject] : null;
+  currentProjectId = match ? match.id : defaultProjectId;
+  syncProjectUrl();
+  updateProjectButton();
+}
+
+// Keep the URL in sync with the active project. The default project is the bare
+// URL (no ?project=) so the canonical link stays clean.
+function syncProjectUrl() {
+  const params = new URLSearchParams(location.search);
+  if (currentProjectId != null && String(currentProjectId) !== String(defaultProjectId)) {
+    params.set('project', currentProjectId);
+  } else {
+    params.delete('project');
+  }
+  const qs = params.toString();
+  history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+}
+
+function updateProjectButton() {
+  if (!btnProject) return;
+  const p = projectsById[currentProjectId];
+  btnProject.textContent = (p ? p.name : 'Project') + ' ▾';
+}
+
+// Remove every route polyline + node marker from the map and clear route state,
+// so the next project can render its own routes from scratch.
+function clearAllRoutes() {
+  for (const rid in routePolylines) { map.removeLayer(routePolylines[rid]); }
+  for (const nid in routeNodeMarkers) { map.removeLayer(routeNodeMarkers[nid]); }
+  routePolylines = {};
+  routeNodeMarkers = {};
+  nodeRouteId = {};
+  routes = {};
+  activeRouteId = null;
+  selectedNodeId = null;
+}
+
+async function switchProject(id) {
+  if (id == null || String(id) === String(currentProjectId)) { closeProjectDialog(); return; }
+  closeProjectDialog();
+  if (routeEditMode) exitRouteEditMode();
+  setEditMode(false);
+  // Reset cross-project view state.
+  if (typeof closeProfile === 'function') closeProfile();
+  setSelectedRoute(null);
+  currentRoute = null;
+  previousPoiId = null;
+  trackingPoiId = null;
+  currentProjectId = id;
+  syncProjectUrl();
+  updateProjectButton();
+  // Tear down and reload both layers for the new project.
+  clearAllRoutes();
+  clusterGroup.clearLayers();
+  markers = {};
+  pois = {};
+  await Promise.all([loadPois(), loadRoutes()]);
+  refreshPoiConnectionStyles();
+  if (trackingMode) updateTrackingDisplay();
+}
+
+async function createProjectFromInput() {
+  const name = (newProjectInput.value || '').trim();
+  if (!name) { newProjectInput.focus(); return; }
+  try {
+    const project = await api('POST', '/projects', { name });
+    projectsById[project.id] = project;
+    newProjectInput.value = '';
+    await switchProject(project.id);
+  } catch (err) {
+    alert('Could not create project: ' + err.message);
+  }
+}
+
+async function renameProject(id) {
+  const current = projectsById[id];
+  const name = prompt('Rename project', current ? current.name : '');
+  if (name == null) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  try {
+    const project = await api('PUT', '/projects/' + encodeURIComponent(id), { name: trimmed });
+    projectsById[id] = project;
+    if (String(id) === String(currentProjectId)) updateProjectButton();
+    renderProjectList();
+  } catch (err) {
+    alert('Could not rename project: ' + err.message);
+  }
+}
+
+function copyProjectLink(id) {
+  const url = location.origin + location.pathname +
+    (String(id) === String(defaultProjectId) ? '' : '?project=' + encodeURIComponent(id));
+  const done = () => { showUploadToast('Link copied', 100); setTimeout(hideUploadToast, 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(done).catch(() => prompt('Copy this link', url));
+  } else {
+    prompt('Copy this link', url);
+  }
+}
+
+function renderProjectList() {
+  if (!projectListEl) return;
+  const projects = Object.values(projectsById)
+    .sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0) || (a.name || '').localeCompare(b.name || ''));
+  projectListEl.innerHTML = '';
+  for (const p of projects) {
+    const li = document.createElement('li');
+    li.className = 'project-row' + (String(p.id) === String(currentProjectId) ? ' current' : '');
+    li.dataset.id = p.id;
+
+    const name = document.createElement('span');
+    name.className = 'project-name';
+    name.textContent = p.name;
+    li.appendChild(name);
+
+    const actions = document.createElement('span');
+    actions.className = 'project-actions';
+
+    const copy = document.createElement('button');
+    copy.className = 'project-action';
+    copy.title = 'Copy share link';
+    copy.innerHTML = '&#128279;';
+    copy.addEventListener('click', e => { e.stopPropagation(); copyProjectLink(p.id); });
+    actions.appendChild(copy);
+
+    if (authenticated) {
+      const rename = document.createElement('button');
+      rename.className = 'project-action';
+      rename.title = 'Rename';
+      rename.innerHTML = '&#9998;';
+      rename.addEventListener('click', e => { e.stopPropagation(); renameProject(p.id); });
+      actions.appendChild(rename);
+    }
+
+    li.appendChild(actions);
+    li.addEventListener('click', () => switchProject(p.id));
+    projectListEl.appendChild(li);
+  }
+}
+
+// Show/hide the New-project row depending on auth, and refresh rename buttons.
+function updateProjectDialogAuth() {
+  if (newProjectRow) newProjectRow.classList.toggle('hidden', !authenticated);
+  if (projectOverlay && !projectOverlay.classList.contains('hidden')) renderProjectList();
+}
+
+function openProjectDialog() {
+  renderProjectList();
+  updateProjectDialogAuth();
+  projectOverlay.classList.remove('hidden');
+}
+
+function closeProjectDialog() {
+  if (projectOverlay) projectOverlay.classList.add('hidden');
+}
+
+if (btnProject) btnProject.addEventListener('click', openProjectDialog);
+$('btn-project-close')?.addEventListener('click', closeProjectDialog);
+$('btn-create-project')?.addEventListener('click', createProjectFromInput);
+newProjectInput?.addEventListener('keydown', e => { if (e.key === 'Enter') createProjectFromInput(); });
+projectOverlay?.addEventListener('click', e => { if (e.target === projectOverlay) closeProjectDialog(); });
 
 // ── Edit mode ────────────────────────────────────────────────────────────────
 function setEditMode(on) {
@@ -700,7 +898,7 @@ function removeMarker(poiId) {
 
 // ── Load all POIs ────────────────────────────────────────────────────────────
 async function loadPois() {
-  const data = await api('GET', '/pois');
+  const data = await api('GET', '/pois' + projectQuery());
   pois = {};
   clusterGroup.clearLayers();
   markers = {};
@@ -1069,6 +1267,7 @@ async function saveNewPoi() {
 
   try {
     let poi = await api('POST', '/pois', {
+      project: currentProjectId,
       lat: newPoiLatLng.lat,
       lng: newPoiLatLng.lng,
       title,
@@ -1142,6 +1341,7 @@ async function uploadPhotosToMap(files, gpsOverride) {
       batchScaled.forEach(f => fd.append('photos', f));
       fd.append('mapLat', center.lat);
       fd.append('mapLng', center.lng);
+      if (currentProjectId != null) fd.append('project', currentProjectId);
 
       // Remap GPS indices to batch-local positions
       const batchGps = {};
@@ -1280,6 +1480,7 @@ $('btn-login-submit').addEventListener('click', async () => {
     loginError.classList.add('hidden');
     btnLogout.classList.remove('hidden');
     localStorage.removeItem('editAfterAuth');
+    updateProjectDialogAuth();
     setEditMode(true);
   } catch {
     loginError.classList.remove('hidden');
@@ -1580,7 +1781,7 @@ function clearRoute(routeId) {
 }
 
 async function loadRoutes() {
-  const data = await api('GET', '/routes');
+  const data = await api('GET', '/routes' + projectQuery());
   routes = {};
   for (const r of data) routes[r.id] = r;
   for (const r of data) renderRoute(r);
@@ -1808,7 +2009,7 @@ function updateRouteHint() {
 
 async function createNewRouteAndActivate() {
   const color = routeColorInput.value || '#ff69b4';
-  const route = await api('POST', '/routes', { color });
+  const route = await api('POST', '/routes', { color, project: currentProjectId });
   routes[route.id] = route;
   renderRoute(route);
   waitingForRouteStart = false;
@@ -3162,6 +3363,7 @@ if (Math.min(window.innerWidth, window.innerHeight) <= 768 && 'ontouchstart' in 
   else window.addEventListener('load', tryHideBar, { once: true });
 }
 (async () => {
+  await loadProjects(); // resolves currentProjectId (from URL or default) before loading data
   await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
   refreshPoiConnectionStyles(); // POIs and routes loaded in parallel — set borders now both are in
   const overlay = document.getElementById('loading-overlay');

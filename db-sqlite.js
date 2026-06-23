@@ -14,12 +14,25 @@ try { db.exec('ALTER TABLE photos ADD COLUMN marker_y REAL'); } catch (_) {}
 try { db.exec('ALTER TABLE photos ADD COLUMN marker_rotation INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE routes ADD COLUMN dir1_name TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE routes ADD COLUMN dir2_name TEXT'); } catch (_) {}
+// project_id is also declared in the CREATE statements below (for fresh DBs);
+// these ALTERs add it to pre-existing tables.
+try { db.exec('ALTER TABLE pois ADD COLUMN project_id INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE routes ADD COLUMN project_id INTEGER'); } catch (_) {}
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    owner TEXT,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
     color TEXT NOT NULL DEFAULT '#ff69b4',
+    project_id INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -38,6 +51,7 @@ db.exec(`
     lng REAL NOT NULL,
     title TEXT,
     note TEXT,
+    project_id INTEGER,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   );
@@ -53,6 +67,50 @@ db.exec(`
   );
 `);
 
+// ── Projects ──────────────────────────────────────────────────────────────────
+// A POI/route with a NULL project_id is treated as belonging to the default
+// project. On first run we create the default project and backfill any pre-
+// existing rows so the historic data lands in one named project.
+
+let _defaultProjectId = null;
+function ensureDefaultProject() {
+  if (_defaultProjectId != null) return _defaultProjectId;
+  let row = db.prepare('SELECT id FROM projects WHERE is_default = 1 ORDER BY id ASC LIMIT 1').get();
+  if (!row) {
+    const r = db.prepare('INSERT INTO projects (name, owner, is_default) VALUES (?, NULL, 1)').run('Pembs C2C');
+    row = { id: r.lastInsertRowid };
+  }
+  _defaultProjectId = row.id;
+  db.prepare('UPDATE pois   SET project_id = ? WHERE project_id IS NULL').run(_defaultProjectId);
+  db.prepare('UPDATE routes SET project_id = ? WHERE project_id IS NULL').run(_defaultProjectId);
+  return _defaultProjectId;
+}
+ensureDefaultProject();
+
+function getDefaultProjectId() { return ensureDefaultProject(); }
+
+// Resolve a (possibly missing) project id to a concrete one; null/'' → default.
+function resolveProject(projectId) {
+  return (projectId != null && projectId !== '') ? Number(projectId) : ensureDefaultProject();
+}
+
+function getAllProjects() {
+  ensureDefaultProject();
+  return db.prepare(
+    'SELECT id, name, owner, is_default, created_at FROM projects ORDER BY is_default DESC, name COLLATE NOCASE ASC'
+  ).all();
+}
+
+function createProject(name, owner) {
+  const r = db.prepare('INSERT INTO projects (name, owner, is_default) VALUES (?, ?, 0)').run(name || 'Untitled', owner || null);
+  return db.prepare('SELECT id, name, owner, is_default, created_at FROM projects WHERE id = ?').get(r.lastInsertRowid);
+}
+
+function renameProject(id, name) {
+  db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(name || 'Untitled', id);
+  return db.prepare('SELECT id, name, owner, is_default, created_at FROM projects WHERE id = ?').get(id);
+}
+
 function haversineMeters(lat1, lng1, lat2, lng2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -62,8 +120,12 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function findNearestPoi(lat, lng, maxMeters) {
-  const pois = db.prepare('SELECT id, lat, lng FROM pois').all();
+function findNearestPoi(lat, lng, maxMeters, projectId) {
+  const pid = resolveProject(projectId);
+  const isDefault = pid === ensureDefaultProject();
+  const pois = isDefault
+    ? db.prepare('SELECT id, lat, lng FROM pois WHERE project_id = ? OR project_id IS NULL').all(pid)
+    : db.prepare('SELECT id, lat, lng FROM pois WHERE project_id = ?').all(pid);
   let best = null;
   let bestDist = maxMeters;
   for (const p of pois) {
@@ -73,8 +135,12 @@ function findNearestPoi(lat, lng, maxMeters) {
   return best;
 }
 
-function getAllPois() {
-  const pois = db.prepare('SELECT * FROM pois ORDER BY created_at DESC').all();
+function getAllPois(projectId) {
+  const pid = resolveProject(projectId);
+  const isDefault = pid === ensureDefaultProject();
+  const pois = isDefault
+    ? db.prepare('SELECT * FROM pois WHERE project_id = ? OR project_id IS NULL ORDER BY created_at DESC').all(pid)
+    : db.prepare('SELECT * FROM pois WHERE project_id = ? ORDER BY created_at DESC').all(pid);
   const photos = db.prepare('SELECT * FROM photos ORDER BY order_index ASC, id ASC').all();
   const photosByPoi = {};
   for (const ph of photos) {
@@ -91,10 +157,11 @@ function getPoiById(id) {
   return { ...poi, photos };
 }
 
-function createPoi(lat, lng, title, note) {
+function createPoi(lat, lng, title, note, projectId) {
+  const pid = resolveProject(projectId);
   const result = db.prepare(
-    'INSERT INTO pois (lat, lng, title, note) VALUES (?, ?, ?, ?)'
-  ).run(lat, lng, title || null, note || null);
+    'INSERT INTO pois (lat, lng, title, note, project_id) VALUES (?, ?, ?, ?, ?)'
+  ).run(lat, lng, title || null, note || null, pid);
   return getPoiById(result.lastInsertRowid);
 }
 
@@ -157,8 +224,12 @@ function reorderPhotos(poiId, orderedIds) {
 
 // ── Routes ──────────────────────────────────────────────────────────────────
 
-function getAllRoutes() {
-  const routes = db.prepare('SELECT * FROM routes ORDER BY created_at ASC').all();
+function getAllRoutes(projectId) {
+  const pid = resolveProject(projectId);
+  const isDefault = pid === ensureDefaultProject();
+  const routes = isDefault
+    ? db.prepare('SELECT * FROM routes WHERE project_id = ? OR project_id IS NULL ORDER BY created_at ASC').all(pid)
+    : db.prepare('SELECT * FROM routes WHERE project_id = ? ORDER BY created_at ASC').all(pid);
   const nodes = db.prepare('SELECT * FROM route_nodes ORDER BY route_id, order_index ASC, id ASC').all();
   const byRoute = {};
   for (const n of nodes) {
@@ -175,8 +246,9 @@ function getRouteById(id) {
   return { ...route, nodes };
 }
 
-function createRoute(name, color) {
-  const r = db.prepare('INSERT INTO routes (name, color) VALUES (?, ?)').run(name || null, color || '#ff69b4');
+function createRoute(name, color, projectId) {
+  const pid = resolveProject(projectId);
+  const r = db.prepare('INSERT INTO routes (name, color, project_id) VALUES (?, ?, ?)').run(name || null, color || '#ff69b4', pid);
   return getRouteById(r.lastInsertRowid);
 }
 
@@ -212,7 +284,7 @@ function splitRoute(routeId, splitNodeId) {
     const deletedTailNodeIds = [];
     if (tailNodes.length >= 2) {
       const origRoute = db.prepare('SELECT * FROM routes WHERE id = ?').get(routeId);
-      const nr = db.prepare('INSERT INTO routes (color) VALUES (?)').run(origRoute?.color || '#ff69b4');
+      const nr = db.prepare('INSERT INTO routes (color, project_id) VALUES (?, ?)').run(origRoute?.color || '#ff69b4', origRoute?.project_id ?? null);
       const newRouteId = nr.lastInsertRowid;
       const placeholders = tailNodes.map(() => '?').join(',');
       db.prepare(`UPDATE route_nodes SET route_id = ? WHERE id IN (${placeholders})`).run(newRouteId, ...tailNodes.map(n => n.id));
@@ -326,6 +398,10 @@ module.exports = {
   splitRoute,
   insertRouteNode,
   findNearestPoi,
+  getAllProjects,
+  getDefaultProjectId,
+  createProject,
+  renameProject,
   getAllPois,
   getPoiById,
   createPoi,

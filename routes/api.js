@@ -105,10 +105,39 @@ async function extractGPS(buffer) {
 
 function parseId(id) { return IS_AWS ? id : Number(id); }
 
+// Current project from the request (?project= on GETs, body.project on writes).
+// null ⇒ the DB layer resolves it to the default project.
+function projectOf(req) {
+  const raw = req.query.project ?? req.body.project;
+  if (raw == null || raw === '') return null;
+  return IS_AWS ? raw : Number(raw);
+}
+
+// ── Project routes ──────────────────────────────────────────────────────────────
+
+router.get('/projects', wrap(async (req, res) => {
+  const projects = await Promise.resolve(db.getAllProjects());
+  res.json({ projects, defaultId: db.getDefaultProjectId() });
+}));
+
+router.post('/projects', requireAuth, wrap(async (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name required' });
+  res.json(await Promise.resolve(db.createProject(name, req.session.email || null)));
+}));
+
+router.put('/projects/:id', requireAuth, wrap(async (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const project = await Promise.resolve(db.renameProject(parseId(req.params.id), name));
+  if (!project) return res.status(404).json({ error: 'Not found' });
+  res.json(project);
+}));
+
 // ── POI routes ────────────────────────────────────────────────────────────────
 
 router.get('/pois', wrap(async (req, res) => {
-  res.json(await withPhotoUrlsMany(await Promise.resolve(db.getAllPois())));
+  res.json(await withPhotoUrlsMany(await Promise.resolve(db.getAllPois(projectOf(req)))));
 }));
 
 router.get('/pois/:id', wrap(async (req, res) => {
@@ -120,7 +149,7 @@ router.get('/pois/:id', wrap(async (req, res) => {
 router.post('/pois', requireAuth, wrap(async (req, res) => {
   const { lat, lng, title, note } = req.body;
   if (lat == null || lng == null) return res.status(400).json({ error: 'lat and lng required' });
-  res.json(await Promise.resolve(db.createPoi(Number(lat), Number(lng), title, note)));
+  res.json(await Promise.resolve(db.createPoi(Number(lat), Number(lng), title, note, projectOf(req))));
 }));
 
 router.put('/pois/:id', requireAuth, wrap(async (req, res) => {
@@ -189,6 +218,7 @@ router.put('/pois/:id/photo-order', requireAuth, wrap(async (req, res) => {
 router.post('/upload-photos', requireAuth, upload.array('photos', 100), wrap(async (req, res) => {
   const mapLat   = parseFloat(req.body.mapLat) || 51.5;
   const mapLng   = parseFloat(req.body.mapLng) || -0.1;
+  const projectId = projectOf(req);
   const clientGps = req.body.gpsData ? JSON.parse(req.body.gpsData) : {};
 
   const processed = [];
@@ -210,7 +240,7 @@ router.post('/upload-photos', requireAuth, upload.array('photos', 100), wrap(asy
       if (db.haversineMeters(lat, lng, g.lat, g.lng) <= 10) { g.photos.push(item); placed = true; break; }
     }
     if (placed) continue;
-    const nearby = await Promise.resolve(db.findNearestPoi(lat, lng, 10));
+    const nearby = await Promise.resolve(db.findNearestPoi(lat, lng, 10, projectId));
     if (nearby) {
       const existing = groups.find(g => g.existingPoiId === nearby.id);
       if (existing) existing.photos.push(item);
@@ -221,7 +251,7 @@ router.post('/upload-photos', requireAuth, upload.array('photos', 100), wrap(asy
   }
 
   if (noGpsPhotos.length > 0) {
-    const nearby = await Promise.resolve(db.findNearestPoi(mapLat, mapLng, 10));
+    const nearby = await Promise.resolve(db.findNearestPoi(mapLat, mapLng, 10, projectId));
     if (nearby) {
       const existing = groups.find(g => g.existingPoiId === nearby.id);
       if (existing) existing.photos.push(...noGpsPhotos);
@@ -235,7 +265,7 @@ router.post('/upload-photos', requireAuth, upload.array('photos', 100), wrap(asy
   for (const group of groups) {
     let poi = group.existingPoiId
       ? await Promise.resolve(db.getPoiById(group.existingPoiId))
-      : await Promise.resolve(db.createPoi(group.lat, group.lng, null, null));
+      : await Promise.resolve(db.createPoi(group.lat, group.lng, null, null, projectId));
     let orderIndex = poi.photos.length;
     for (const item of group.photos) {
       await Promise.resolve(db.addPhoto(poi.id, item.filename, item.thumbFilename, item.file.originalname, orderIndex++));
@@ -249,11 +279,11 @@ router.post('/upload-photos', requireAuth, upload.array('photos', 100), wrap(asy
 // ── Route endpoints ───────────────────────────────────────────────────────────
 
 router.get('/routes', wrap(async (req, res) => {
-  res.json(await Promise.resolve(db.getAllRoutes()));
+  res.json(await Promise.resolve(db.getAllRoutes(projectOf(req))));
 }));
 
 router.post('/routes', requireAuth, wrap(async (req, res) => {
-  res.json(await Promise.resolve(db.createRoute(req.body.name, req.body.color)));
+  res.json(await Promise.resolve(db.createRoute(req.body.name, req.body.color, projectOf(req))));
 }));
 
 router.put('/routes/:id', requireAuth, wrap(async (req, res) => {

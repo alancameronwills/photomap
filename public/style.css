@@ -344,6 +344,56 @@ body, html {
 }
 .modal-large { max-width: 640px; }
 
+/* ── Projects ── */
+.project-chip {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.10);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.project-chip:hover { background: rgba(255,255,255,0.18); }
+
+.project-list { list-style: none; margin: 0 0 16px; padding: 0; max-height: 50vh; overflow-y: auto; }
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.project-row:hover { background: rgba(255,255,255,0.06); }
+.project-row.current { background: rgba(37,99,235,0.22); }
+.project-name { flex: 1 1 auto; color: #e8e8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-row.current .project-name { font-weight: 600; color: #fff; }
+.project-actions { flex: 0 0 auto; display: flex; gap: 4px; }
+.project-action {
+  background: transparent;
+  border: none;
+  color: #b8b8d0;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  line-height: 1;
+}
+.project-action:hover { background: rgba(255,255,255,0.12); color: #fff; }
+
+.project-new { display: flex; gap: 8px; margin-bottom: 16px; }
+.project-new.hidden { display: none; }
+.project-new input { flex: 1 1 auto; width: auto; }
+
 /* Elevation profile — docked bottom panel */
 #profile-panel {
   position: fixed;

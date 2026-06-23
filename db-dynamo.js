@@ -6,13 +6,69 @@ const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
 });
 
-const POIS_TABLE   = process.env.POIS_TABLE   || 'PhotomapPois';
-const PHOTOS_TABLE = process.env.PHOTOS_TABLE || 'PhotomapPhotos';
-const ROUTES_TABLE = process.env.ROUTES_TABLE || 'PhotomapRoutes';
-const NODES_TABLE  = process.env.NODES_TABLE  || 'PhotomapRouteNodes';
+const POIS_TABLE     = process.env.POIS_TABLE     || 'PhotomapPois';
+const PHOTOS_TABLE   = process.env.PHOTOS_TABLE   || 'PhotomapPhotos';
+const ROUTES_TABLE   = process.env.ROUTES_TABLE   || 'PhotomapRoutes';
+const NODES_TABLE    = process.env.NODES_TABLE    || 'PhotomapRouteNodes';
+const PROJECTS_TABLE = process.env.PROJECTS_TABLE || 'PhotomapProjects';
 
 function now() {
   return new Date().toISOString().replace('T', ' ').slice(0, 19);
+}
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+// A POI/route whose project_id is absent is treated as belonging to the default
+// project (fixed id 'default'). This lets pre-existing items show under one named
+// project with no backfill/migration.
+
+const DEFAULT_PROJECT_ID = 'default';
+let _defaultEnsured = false;
+
+async function ensureDefaultProject() {
+  if (_defaultEnsured) return DEFAULT_PROJECT_ID;
+  try {
+    await docClient.send(new PutCommand({
+      TableName: PROJECTS_TABLE,
+      Item: { id: DEFAULT_PROJECT_ID, name: 'Pembs C2C', owner: null, is_default: true, created_at: now() },
+      ConditionExpression: 'attribute_not_exists(id)',
+    }));
+  } catch (e) {
+    if (e.name !== 'ConditionalCheckFailedException') throw e;
+  }
+  _defaultEnsured = true;
+  return DEFAULT_PROJECT_ID;
+}
+
+function getDefaultProjectId() { return DEFAULT_PROJECT_ID; }
+
+function resolveProject(projectId) {
+  return (projectId != null && projectId !== '') ? projectId : DEFAULT_PROJECT_ID;
+}
+
+async function getAllProjects() {
+  await ensureDefaultProject();
+  const { Items = [] } = await docClient.send(new ScanCommand({ TableName: PROJECTS_TABLE }));
+  Items.sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0) || (a.name || '').localeCompare(b.name || ''));
+  return Items;
+}
+
+async function createProject(name, owner) {
+  const id = crypto.randomUUID();
+  const item = { id, name: name || 'Untitled', owner: owner || null, is_default: false, created_at: now() };
+  await docClient.send(new PutCommand({ TableName: PROJECTS_TABLE, Item: item }));
+  return item;
+}
+
+async function renameProject(id, name) {
+  await docClient.send(new UpdateCommand({
+    TableName: PROJECTS_TABLE,
+    Key: { id },
+    UpdateExpression: 'SET #n = :n',
+    ExpressionAttributeNames: { '#n': 'name' },
+    ExpressionAttributeValues: { ':n': name || 'Untitled' },
+  }));
+  const { Item } = await docClient.send(new GetCommand({ TableName: PROJECTS_TABLE, Key: { id } }));
+  return Item || null;
 }
 
 function haversineMeters(lat1, lng1, lat2, lng2) {
@@ -24,24 +80,27 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-async function findNearestPoi(lat, lng, maxMeters) {
+async function findNearestPoi(lat, lng, maxMeters, projectId) {
+  const pid = resolveProject(projectId);
   const { Items = [] } = await docClient.send(new ScanCommand({
     TableName: POIS_TABLE,
-    ProjectionExpression: 'id, lat, lng',
+    ProjectionExpression: 'id, lat, lng, project_id',
   }));
   let best = null, bestDist = maxMeters;
-  for (const p of Items) {
+  for (const p of Items.filter(p => (p.project_id || DEFAULT_PROJECT_ID) === pid)) {
     const d = haversineMeters(lat, lng, p.lat, p.lng);
     if (d < bestDist) { bestDist = d; best = p; }
   }
   return best;
 }
 
-async function getAllPois() {
-  const [{ Items: pois = [] }, { Items: photos = [] }] = await Promise.all([
+async function getAllPois(projectId) {
+  const pid = resolveProject(projectId);
+  const [{ Items: poisAll = [] }, { Items: photos = [] }] = await Promise.all([
     docClient.send(new ScanCommand({ TableName: POIS_TABLE })),
     docClient.send(new ScanCommand({ TableName: PHOTOS_TABLE })),
   ]);
+  const pois = poisAll.filter(p => (p.project_id || DEFAULT_PROJECT_ID) === pid);
   const photosByPoi = {};
   for (const ph of photos) {
     if (!photosByPoi[ph.poi_id]) photosByPoi[ph.poi_id] = [];
@@ -69,10 +128,10 @@ async function getPoiById(id) {
   return { ...poi, photos };
 }
 
-async function createPoi(lat, lng, title, note) {
+async function createPoi(lat, lng, title, note, projectId) {
   const id = crypto.randomUUID();
   const ts = now();
-  const item = { id, lat, lng, title: title || null, note: note || null, created_at: ts, updated_at: ts };
+  const item = { id, lat, lng, title: title || null, note: note || null, project_id: resolveProject(projectId), created_at: ts, updated_at: ts };
   await docClient.send(new PutCommand({ TableName: POIS_TABLE, Item: item }));
   return { ...item, photos: [] };
 }
@@ -191,11 +250,13 @@ async function reorderPhotos(poiId, orderedIds) {
 
 // ── Routes ──────────────────────────────────────────────────────────────────
 
-async function getAllRoutes() {
-  const [{ Items: routes = [] }, { Items: nodes = [] }] = await Promise.all([
+async function getAllRoutes(projectId) {
+  const pid = resolveProject(projectId);
+  const [{ Items: routesAll = [] }, { Items: nodes = [] }] = await Promise.all([
     docClient.send(new ScanCommand({ TableName: ROUTES_TABLE })),
     docClient.send(new ScanCommand({ TableName: NODES_TABLE })),
   ]);
+  const routes = routesAll.filter(r => (r.project_id || DEFAULT_PROJECT_ID) === pid);
   routes.sort((a, b) => a.created_at.localeCompare(b.created_at));
   const byRoute = {};
   for (const n of nodes) {
@@ -223,9 +284,9 @@ async function getRouteById(id) {
   return { ...route, nodes };
 }
 
-async function createRoute(name, color) {
+async function createRoute(name, color, projectId) {
   const id = crypto.randomUUID();
-  const item = { id, name: name || null, color: color || '#ff69b4', created_at: now() };
+  const item = { id, name: name || null, color: color || '#ff69b4', project_id: resolveProject(projectId), created_at: now() };
   await docClient.send(new PutCommand({ TableName: ROUTES_TABLE, Item: item }));
   return { ...item, nodes: [] };
 }
@@ -283,7 +344,7 @@ async function splitRoute(routeId, splitNodeId) {
   if (tailNodes.length >= 2) {
     const { Item: origRoute } = await docClient.send(new GetCommand({ TableName: ROUTES_TABLE, Key: { id: routeId } }));
     const newRouteId = crypto.randomUUID();
-    const newRouteItem = { id: newRouteId, name: null, color: origRoute?.color || '#ff69b4', created_at: now() };
+    const newRouteItem = { id: newRouteId, name: null, color: origRoute?.color || '#ff69b4', project_id: origRoute?.project_id || DEFAULT_PROJECT_ID, created_at: now() };
     await docClient.send(new PutCommand({ TableName: ROUTES_TABLE, Item: newRouteItem }));
 
     for (let i = 0; i < tailNodes.length; i += 25) {
@@ -490,6 +551,10 @@ module.exports = {
   splitRoute,
   insertRouteNode,
   findNearestPoi,
+  getAllProjects,
+  getDefaultProjectId,
+  createProject,
+  renameProject,
   getAllPois,
   getPoiById,
   createPoi,

@@ -33,6 +33,7 @@
 <div id="toolbar">
   <div id="toolbar-left">
     <span id="app-title">Map y Ffoto</span>
+    <button id="btn-project" class="project-chip" title="Switch project">Project ▾</button>
     <div id="dir-pref" title="Direction preference — filter photos by direction">
       <button class="dir-btn active" data-dir="">Direction</button>
       <button class="dir-btn" data-dir="1">1</button>
@@ -98,6 +99,21 @@
         Sign in with Microsoft
       </a>
       <div id="oauth-error" class="error-msg hidden"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Project selector modal -->
+<div id="project-overlay" class="overlay hidden">
+  <div class="modal">
+    <h2>Projects</h2>
+    <ul id="project-list" class="project-list"></ul>
+    <div id="project-new" class="project-new hidden">
+      <input type="text" id="new-project-input" placeholder="New project name" maxlength="80"/>
+      <button id="btn-create-project" class="btn-primary">Create</button>
+    </div>
+    <div class="modal-actions">
+      <button id="btn-project-close" class="btn-secondary">Close</button>
     </div>
   </div>
 </div>
