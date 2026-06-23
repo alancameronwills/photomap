@@ -419,6 +419,20 @@ body, html {
   pointer-events: none;
 }
 #profile-cursor-label.hidden { display: none; }
+
+/* Marker on the chart for the point of the route under the tracking crosshair */
+#profile-track-marker {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #2563eb;
+  border: 2px solid #fff;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+#profile-track-marker.hidden { display: none; }
 .profile-msg {
   position: absolute;
   inset: 0;

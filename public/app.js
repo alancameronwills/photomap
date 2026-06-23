@@ -156,6 +156,7 @@ map.on('moveend', () => {
   const c = map.getCenter();
   localStorage.setItem('mapView', JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
   if (trackingMode && !editMode) updateTrackingDisplay();
+  updateProfileTrackMarker();
 });
 
 function initLayerSwitcher() {
@@ -2214,6 +2215,7 @@ const profileTitle    = $('profile-title');
 const profileChartWrap = $('profile-chart-wrap');
 const profileCursor   = $('profile-cursor');
 const profileCursorLabel = $('profile-cursor-label');
+const profileTrackMarker = $('profile-track-marker');
 const profileCache    = {}; // routeId -> profile JSON (cleared when a route's nodes change)
 let   profileDrawn    = null; // { data, route } last drawn — for redraw on resize
 let   profileChart    = null; // { padL, plotW, xMax, points } chart geometry for the cursor
@@ -2384,6 +2386,35 @@ document.addEventListener('pointerdown', (e) => {
   if (elevationMode && !profileChartWrap.contains(e.target)) exitElevationMode();
 });
 
+// Inverse of the Elevation cursor: while tracking (view mode) with the selected
+// route's profile shown, if the crosshair is near that route, mark the matching
+// point on the chart. Called on every map move.
+function updateProfileTrackMarker() {
+  if (elevationMode || !trackingMode || editMode
+      || profilePanel.classList.contains('hidden')
+      || selectedRouteId == null || !profileChart
+      || !profileDrawn || String(profileDrawn.route.id) !== String(selectedRouteId)) {
+    profileTrackMarker.classList.add('hidden');
+    return;
+  }
+  const { x: cx, y: cy } = getCrosshairPixel();
+  const cll = map.containerPointToLatLng([cx, cy]);
+  let best = null, bestDist = Infinity;
+  for (const p of profileChart.points) {
+    const d = map.distance(cll, [p.lat, p.lng]);
+    if (d < bestDist) { bestDist = d; best = p; }
+  }
+  const THRESHOLD_M = 40; // crosshair must be within this of the route
+  if (!best || bestDist > THRESHOLD_M || best.ele == null) {
+    profileTrackMarker.classList.add('hidden');
+    return;
+  }
+  const { padL, plotW, padT, plotH, lo, hi, xMax } = profileChart;
+  profileTrackMarker.style.left = (padL + (best.dist / xMax) * plotW) + 'px';
+  profileTrackMarker.style.top = (padT + (1 - (best.ele - lo) / (hi - lo)) * plotH) + 'px';
+  profileTrackMarker.classList.remove('hidden');
+}
+
 async function showRouteProfile(routeId) {
   const route = routes[routeId];
   if (!route) return;
@@ -2513,6 +2544,8 @@ function drawProfile(data, route) {
     const x = X(pm.dist);
     ctx.beginPath(); ctx.moveTo(x, baseY); ctx.lineTo(x, baseY + 4); ctx.stroke();
   }
+
+  updateProfileTrackMarker(); // reposition the crosshair marker for the new geometry
 }
 
 // Evenly-spaced "nice" tick values spanning [lo, hi] (~count of them).
@@ -2562,6 +2595,7 @@ function setTrackingMode(on) {
   }
   syncMobileMenu();
   updateLiveTrackBtn();
+  updateProfileTrackMarker(); // show/hide the chart marker as tracking toggles
   // Onboarding cue: flash the crosshair red and pop a tooltip on the off→on
   // transition. Wait a tick so layout (panel position, crosshair offset) has
   // settled before measuring its rect.
