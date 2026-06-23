@@ -235,6 +235,11 @@ function getRoutesForPoi(poiId) {
   return Object.values(routes).filter(r => r.nodes.some(n => n.poi_id === poiId));
 }
 
+// True if any route node is linked to this POI (i.e. it's on a route).
+function isPoiConnected(poi) {
+  return getRoutesForPoi(poi.id).length > 0;
+}
+
 // Sets currentRoute according to the model rules, then records previousPoiId.
 function updateCurrentRouteForPoi(poi) {
   const linked = getRoutesForPoi(poi.id);
@@ -586,19 +591,19 @@ const LABEL_MIN_ZOOM = 13;
 
 function createMarkerIcon(poi) {
   const photos = sortedPhotos(poi);
+  const editCls = editMode ? ' edit-mode' : '';
+  const connCls = isPoiConnected(poi) ? '' : ' unconnected'; // black border when not on a route
   if (photos.length > 0) {
     const thumb = photos[0].thumb_url || `/uploads/thumbs/${photos[0].thumb_filename}`;
-    const editCls = editMode ? ' edit-mode' : '';
     return L.divIcon({
-      html: `<div class="photo-marker${editCls}"><img src="${thumb}" alt="" draggable="false"/></div>`,
+      html: `<div class="photo-marker${editCls}${connCls}"><img src="${thumb}" alt="" draggable="false"/></div>`,
       className: '',
       iconSize: [56, 56],
       iconAnchor: [28, 28],
     });
   }
-  const editCls = editMode ? ' edit-mode' : '';
   return L.divIcon({
-    html: `<div class="dot-marker${editCls}"></div>`,
+    html: `<div class="dot-marker${editCls}${connCls}"></div>`,
     className: '',
     iconSize: [18, 18],
     iconAnchor: [9, 9],
@@ -657,6 +662,7 @@ function addOrUpdateMarker(poi) {
   }
 
   markers[poi.id] = marker;
+  marker._conn = isPoiConnected(poi); // tracked so refreshPoiConnectionStyles can skip unchanged
   if (editMode) {
     marker.addTo(map);
     marker.dragging.disable();
@@ -664,6 +670,24 @@ function addOrUpdateMarker(poi) {
   } else {
     clusterGroup.addLayer(marker);
   }
+}
+
+// Swap a POI marker's icon when its connected-to-a-route state changes, so its
+// border (white = connected, black = stray) stays current without a full rebuild.
+function setPoiIconForConnection(poi) {
+  const marker = poi && markers[poi.id];
+  if (!marker) return;
+  const conn = isPoiConnected(poi);
+  if (marker._conn === conn) return;
+  marker._conn = conn;
+  const drag = !!(marker.dragging && marker.dragging._enabled);
+  if (drag) marker.dragging.disable();
+  marker.setIcon(createMarkerIcon(poi));
+  if (drag) marker.dragging.enable();
+}
+
+function refreshPoiConnectionStyles() {
+  for (const poi of Object.values(pois)) setPoiIconForConnection(poi);
 }
 
 function removeMarker(poiId) {
@@ -986,6 +1010,7 @@ async function deleteCurrentPoi() {
     }
     delete pois[editingPoiId];
     removeMarker(editingPoiId);
+    refreshPoiConnectionStyles(); // a cascaded route deletion may strand other POIs
     closeEditDialog();
     closePreview();
   } catch (err) {
@@ -1608,6 +1633,7 @@ async function trySnapNodeToPoi(node) {
       marker.setLatLng([poi.lat, poi.lng]);
       marker.setIcon(nodeIcon(node, selectedNodeId === node.id));
       redrawPolyline(nodeRouteId[node.id]);
+      setPoiIconForConnection(poi); // POI now on a route — drop its black border
       return true;
     }
   }
@@ -1633,6 +1659,84 @@ async function trySnapPoiToNodes(poiId, poiLatlng) {
       }
     }
   }
+  setPoiIconForConnection(pois[poiId]); // may now be on a route — refresh its border
+}
+
+// Closest point on segment a–b to point p, as ground distance (metres) and the
+// parameter t∈[0,1] along the segment. Uses a local equirectangular projection,
+// accurate at the few-metre scale we care about.
+function closestPointOnSegment(p, a, b) {
+  const R = 6378137, rad = Math.PI / 180;
+  const cosLat = Math.cos(p.lat * rad);
+  const ax = (a.lng - p.lng) * rad * R * cosLat, ay = (a.lat - p.lat) * rad * R;
+  const bx = (b.lng - p.lng) * rad * R * cosLat, by = (b.lat - p.lat) * rad * R;
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((-ax) * dx + (-ay) * dy) / len2; // p is the origin
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return { dist: Math.hypot(cx, cy), t };
+}
+
+// On leaving Edit Routes mode, rescue POIs the user created but forgot to attach.
+// Pass 1: a stray POI within 5 m of an unlinked route node links to it (node snaps
+//         onto the POI, as a manual drag-link does).
+// Pass 2: a stray POI still loose but within 5 m of a route's *line* gets a new node
+//         inserted into that route at the nearest point, linked to the POI.
+async function connectStrayPoisToRoutes() {
+  const connected = new Set(); // poi ids already on a route
+  for (const r of Object.values(routes))
+    for (const n of r.nodes) if (n.poi_id != null) connected.add(String(n.poi_id));
+
+  const touched = new Set();   // routes that need re-rendering
+
+  // Pass 1 — link to a nearby unlinked node.
+  for (const poi of Object.values(pois)) {
+    if (connected.has(String(poi.id))) continue;
+    let best = null, bestDist = Infinity;
+    for (const route of Object.values(routes)) {
+      for (const node of route.nodes) {
+        if (node.poi_id != null) continue;
+        const d = map.distance([poi.lat, poi.lng], [node.lat, node.lng]);
+        if (d <= 5 && d < bestDist) { bestDist = d; best = { node, routeId: route.id }; }
+      }
+    }
+    if (!best) continue;
+    try {
+      await api('PUT', `/route-nodes/${best.node.id}`, { lat: poi.lat, lng: poi.lng, poiId: poi.id });
+      best.node.lat = poi.lat; best.node.lng = poi.lng; best.node.poi_id = poi.id;
+      connected.add(String(poi.id));
+      touched.add(best.routeId);
+    } catch (e) { console.error('Auto-connect (link node) failed:', e); }
+  }
+
+  // Pass 2 — insert a node where a route line passes within 5 m.
+  for (const poi of Object.values(pois)) {
+    if (connected.has(String(poi.id))) continue;
+    let best = null, bestDist = Infinity;
+    for (const route of Object.values(routes)) {
+      const ns = route.nodes;
+      for (let i = 0; i + 1 < ns.length; i++) {
+        const { dist } = closestPointOnSegment(poi, ns[i], ns[i + 1]);
+        if (dist < bestDist) { bestDist = dist; best = { routeId: route.id, afterNode: ns[i] }; }
+      }
+    }
+    if (!best || bestDist > 5) continue;
+    try {
+      const node = await api('POST', `/routes/${best.routeId}/nodes`, {
+        lat: poi.lat, lng: poi.lng, afterNodeId: best.afterNode.id, poiId: poi.id,
+      });
+      const route = routes[best.routeId];
+      const idx = route.nodes.findIndex(n => n.id === best.afterNode.id);
+      route.nodes.splice(idx + 1, 0, node);
+      connected.add(String(poi.id));
+      touched.add(best.routeId);
+    } catch (e) { console.error('Auto-connect (insert node) failed:', e); }
+  }
+
+  // Rebuild affected routes (polylines + node markers) from the updated data.
+  for (const rid of touched) if (routes[rid]) renderRoute(routes[rid]);
+  return touched.size;
 }
 
 // Called after a POI is dragged — updates any linked node positions client-side
@@ -1763,7 +1867,14 @@ function exitRouteEditMode() {
   refreshAllNodeIcons();
   syncMobileMenu();
 
-  if (shouldCleanupOrphan) deleteNode(lastNodeId);
+  // Delete an unfinished orphan node first, then auto-connect any stray POIs that
+  // sit on (within 5 m of) a route node the user forgot to link, then refresh the
+  // unconnected-POI borders (catches both the new links and any deletions made).
+  (async () => {
+    if (shouldCleanupOrphan) await deleteNode(lastNodeId);
+    await connectStrayPoisToRoutes();
+    refreshPoiConnectionStyles();
+  })();
 }
 
 function selectNode(nodeId) {
@@ -3052,6 +3163,7 @@ if (Math.min(window.innerWidth, window.innerHeight) <= 768 && 'ontouchstart' in 
 }
 (async () => {
   await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
+  refreshPoiConnectionStyles(); // POIs and routes loaded in parallel — set borders now both are in
   const overlay = document.getElementById('loading-overlay');
   overlay.classList.add('hidden');
   overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });

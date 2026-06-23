@@ -259,6 +259,10 @@ body, html {
   cursor: move;
 }
 
+/* POIs not connected to any route get a black border (in view and edit modes) */
+.photo-marker.unconnected,
+.dot-marker.unconnected { border-color: #000; }
+
 /* ── Preview Panel ── */
 #preview-panel {
   position: fixed;
