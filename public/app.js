@@ -191,7 +191,7 @@ function initLayerSwitcher() {
 // Marker cluster group
 const clusterGroup = L.markerClusterGroup({
   showCoverageOnHover: false,
-  maxClusterRadius: 60,
+  maxClusterRadius: 40, // lower = less eager clustering (markers may slightly overlap)
   iconCreateFunction(cluster) {
     const count = cluster.getChildCount();
     const size = count < 10 ? 36 : count < 100 ? 44 : 52;
