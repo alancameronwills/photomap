@@ -7,3 +7,6 @@ uploads/
 .aws-sam/
 samconfig.toml
 .claude/
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
