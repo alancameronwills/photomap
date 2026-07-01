@@ -20,10 +20,57 @@ function makeNlsLayer() {
 }
 
 // ── Photo scaling ────────────────────────────────────────────────────────────
+// True for Apple HEIC/HEIF files. iOS sometimes leaves file.type blank, so we
+// also sniff the filename extension.
+function isHeic(file) {
+  const t = (file.type || '').toLowerCase();
+  if (t === 'image/heic' || t === 'image/heif') return true;
+  return /\.(heic|heif)$/i.test(file.name || '');
+}
+
+// Lazily injects the heic2any UMD bundle (~1.5 MB, WASM-backed) the first time a
+// HEIC file is seen, so JPEG-only users never download it. Resolves to the global
+// heic2any function, or null if it can't load.
+let _heic2anyPromise = null;
+function loadHeic2any() {
+  if (typeof heic2any !== 'undefined') return Promise.resolve(heic2any);
+  if (_heic2anyPromise) return _heic2anyPromise;
+  _heic2anyPromise = new Promise(resolve => {
+    const s = document.createElement('script');
+    s.src = '/vendor/heic2any/heic2any.min.js';
+    s.onload = () => resolve(typeof heic2any !== 'undefined' ? heic2any : null);
+    s.onerror = () => { _heic2anyPromise = null; resolve(null); };
+    document.head.appendChild(s);
+  });
+  return _heic2anyPromise;
+}
+
+// Decodes a HEIC/HEIF File to a full-resolution JPEG File via heic2any, so the
+// canvas downscale path below (which relies on the browser's <img> decoder that
+// only Safari supports for HEIC) works on every browser. Returns null on failure.
+async function heicToJpeg(file) {
+  const convert = await loadHeic2any();
+  if (!convert) return null;
+  try {
+    const out = await convert({ blob: file, toType: 'image/jpeg', quality: 0.92 });
+    const blob = Array.isArray(out) ? out[0] : out;
+    return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+  } catch (e) {
+    console.warn('HEIC conversion failed', e);
+    return null;
+  }
+}
+
 // Scales a File down to maxPx × maxPx (preserving aspect ratio) using canvas,
 // re-encoding as JPEG. Files already within the limit are returned unchanged.
-// If the browser can't decode the format (e.g. HEIC), the original is returned.
-function scaleImageFile(file, maxPx = 1000) {
+// HEIC/HEIF files are first decoded to JPEG via heic2any (loaded on demand) so
+// the canvas path works cross-browser; if that decode fails the original is
+// returned unchanged.
+async function scaleImageFile(file, maxPx = 1000) {
+  if (isHeic(file)) {
+    const jpeg = await heicToJpeg(file);
+    if (jpeg) file = jpeg;
+  }
   return new Promise(resolve => {
     const img = new Image();
     const url = URL.createObjectURL(file);

@@ -96,6 +96,7 @@ if (process.env.PHOTOS_BUCKET) {
 app.use('/vendor/leaflet',       express.static(path.join(__dirname, 'node_modules/leaflet/dist')));
 app.use('/vendor/markercluster', express.static(path.join(__dirname, 'node_modules/leaflet.markercluster/dist')));
 app.use('/vendor/exifr',         express.static(path.join(__dirname, 'node_modules/exifr/dist')));
+app.use('/vendor/heic2any',      express.static(path.join(__dirname, 'node_modules/heic2any/dist')));
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
