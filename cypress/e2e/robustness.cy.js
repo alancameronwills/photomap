@@ -32,3 +32,29 @@ describe('Error handling — always JSON', () => {
     });
   });
 });
+
+describe('Input validation (authenticated)', () => {
+  beforeEach(() => cy.loginApi());
+
+  it('rejects a non-numeric latitude with 400', () => {
+    cy.request({
+      method: 'POST',
+      url: '/api/pois',
+      body: { lat: 'not-a-number', lng: -0.1 },
+      failOnStatusCode: false,
+    }).then((res) => {
+      expect(res.status).to.eq(400);
+      expect(res.body).to.have.property('error');
+    });
+  });
+
+  it('accepts a genuine zero coordinate (equator/prime meridian)', () => {
+    cy.request('POST', '/api/pois', { lat: 0, lng: 0, title: 'null island' })
+      .then((res) => {
+        expect(res.status).to.eq(200);
+        expect(res.body.lat).to.eq(0);
+        expect(res.body.lng).to.eq(0);
+        cy.request('DELETE', `/api/pois/${res.body.id}`); // clean up
+      });
+  });
+});

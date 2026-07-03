@@ -109,6 +109,11 @@ async function extractGPS(buffer) {
 
 function parseId(id) { return IS_AWS ? id : Number(id); }
 
+// Coerce to a finite Number, or null when the input isn't a usable coordinate
+// (undefined, '', 'abc', NaN, Infinity). Guards the DB layer — SQLite would
+// silently store NaN as NULL and DynamoDB rejects NaN outright.
+function finite(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+
 // Current project from the request (?project= on GETs, body.project on writes).
 // null ⇒ the DB layer resolves it to the default project.
 function projectOf(req) {
@@ -151,17 +156,19 @@ router.get('/pois/:id', wrap(async (req, res) => {
 }));
 
 router.post('/pois', requireAuth, wrap(async (req, res) => {
-  const { lat, lng, title, note } = req.body;
-  if (lat == null || lng == null) return res.status(400).json({ error: 'lat and lng required' });
-  res.json(await Promise.resolve(db.createPoi(Number(lat), Number(lng), title, note, projectOf(req))));
+  const { title, note } = req.body;
+  const lat = finite(req.body.lat), lng = finite(req.body.lng);
+  if (lat === null || lng === null) return res.status(400).json({ error: 'valid lat and lng required' });
+  res.json(await Promise.resolve(db.createPoi(lat, lng, title, note, projectOf(req))));
 }));
 
 router.put('/pois/:id', requireAuth, wrap(async (req, res) => {
   const { lat, lng, title, note } = req.body;
+  let latN, lngN;
+  if (lat != null) { latN = finite(lat); if (latN === null) return res.status(400).json({ error: 'invalid lat' }); }
+  if (lng != null) { lngN = finite(lng); if (lngN === null) return res.status(400).json({ error: 'invalid lng' }); }
   const poi = await Promise.resolve(db.updatePoi(parseId(req.params.id), {
-    lat: lat != null ? Number(lat) : undefined,
-    lng: lng != null ? Number(lng) : undefined,
-    title, note,
+    lat: latN, lng: lngN, title, note,
   }));
   if (!poi) return res.status(404).json({ error: 'Not found' });
   res.json(poi);
@@ -220,10 +227,14 @@ router.put('/pois/:id/photo-order', requireAuth, wrap(async (req, res) => {
 // ── Bulk upload ───────────────────────────────────────────────────────────────
 
 router.post('/upload-photos', requireAuth, upload.array('photos', 100), wrap(async (req, res) => {
-  const mapLat   = parseFloat(req.body.mapLat) || 51.5;
-  const mapLng   = parseFloat(req.body.mapLng) || -0.1;
+  const mapLat   = finite(req.body.mapLat) ?? 51.5;   // ?? not || so a real 0 (equator) survives
+  const mapLng   = finite(req.body.mapLng) ?? -0.1;
   const projectId = projectOf(req);
-  const clientGps = req.body.gpsData ? JSON.parse(req.body.gpsData) : {};
+  let clientGps = {};
+  if (req.body.gpsData) {
+    try { clientGps = JSON.parse(req.body.gpsData); }
+    catch { return res.status(400).json({ error: 'invalid gpsData' }); }
+  }
 
   const processed = [];
   for (let i = 0; i < (req.files || []).length; i++) {
@@ -385,21 +396,25 @@ router.delete('/routes/:id', requireAuth, wrap(async (req, res) => {
 }));
 
 router.post('/routes/:id/nodes', requireAuth, wrap(async (req, res) => {
-  const { lat, lng, poiId, prepend, afterNodeId } = req.body;
-  if (lat == null || lng == null) return res.status(400).json({ error: 'lat and lng required' });
+  const { poiId, prepend, afterNodeId } = req.body;
+  const lat = finite(req.body.lat), lng = finite(req.body.lng);
+  if (lat === null || lng === null) return res.status(400).json({ error: 'valid lat and lng required' });
   if (afterNodeId != null) {
-    const node = await Promise.resolve(db.insertRouteNode(parseId(req.params.id), IS_AWS ? afterNodeId : Number(afterNodeId), Number(lat), Number(lng), poiId || null));
+    const node = await Promise.resolve(db.insertRouteNode(parseId(req.params.id), IS_AWS ? afterNodeId : Number(afterNodeId), lat, lng, poiId || null));
     if (!node) return res.status(404).json({ error: 'afterNodeId not found' });
     return res.json(node);
   }
-  res.json(await Promise.resolve(db.addRouteNode(parseId(req.params.id), Number(lat), Number(lng), poiId || null, !!prepend)));
+  res.json(await Promise.resolve(db.addRouteNode(parseId(req.params.id), lat, lng, poiId || null, !!prepend)));
 }));
 
 router.put('/route-nodes/:id', requireAuth, wrap(async (req, res) => {
   const { lat, lng, poiId } = req.body;
+  let latN, lngN;
+  if (lat != null) { latN = finite(lat); if (latN === null) return res.status(400).json({ error: 'invalid lat' }); }
+  if (lng != null) { lngN = finite(lng); if (lngN === null) return res.status(400).json({ error: 'invalid lng' }); }
   const node = await Promise.resolve(db.updateRouteNode(parseId(req.params.id), {
-    lat:   lat   != null ? Number(lat)  : undefined,
-    lng:   lng   != null ? Number(lng)  : undefined,
+    lat:   latN,
+    lng:   lngN,
     poiId: poiId !== undefined ? poiId : undefined,
   }));
   if (!node) return res.status(404).json({ error: 'Not found' });
