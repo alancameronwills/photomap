@@ -1,7 +1,7 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, UpdateCommand, QueryCommand, TransactWriteCommand, BatchWriteCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, UpdateCommand, QueryCommand, TransactWriteCommand } = require('@aws-sdk/lib-dynamodb');
 const crypto = require('crypto');
-const { scanAll } = require('./dynamo-helpers');
+const { scanAll, batchWrite } = require('./dynamo-helpers');
 
 const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -556,14 +556,7 @@ async function syncPoiNodes(poiId, lat, lng) {
 
 async function _batchDeleteItems(tableName, ids) {
   if (!ids.length) return;
-  for (let i = 0; i < ids.length; i += 25) {
-    const chunk = ids.slice(i, i + 25);
-    await docClient.send(new BatchWriteCommand({
-      RequestItems: {
-        [tableName]: chunk.map(id => ({ DeleteRequest: { Key: { id } } })),
-      },
-    }));
-  }
+  await batchWrite(docClient, tableName, ids.map(id => ({ DeleteRequest: { Key: { id } } })));
 }
 
 module.exports = {
