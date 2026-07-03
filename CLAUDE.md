@@ -7,9 +7,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm start          # kills any existing server on port 3000, then: node --env-file=.env server.js
 npm run dev        # nodemon --env-file=.env server.js (auto-reload; does not kill existing)
+npm run test:unit  # node:test unit tests (test/*.test.js) — no server/AWS needed
+npm run test:e2e   # start-server-and-test: boots the server, runs the Cypress suite headless
 ```
 
 The server runs on port 3000 by default (`PORT` env var overrides this). `kill-server.js` is the prestart hook — it uses PowerShell's `Get-NetTCPConnection` to find and kill the process on port 3000.
+
+Tests: `test/*.test.js` are fast unit tests (currently the `dynamo-helpers` pagination/batch logic, run against a fake client). `cypress/e2e/*.cy.js` are end-to-end tests that hit the live local server (SQLite mode) — `api.cy.js` exercises the HTTP API, `robustness.cy.js` covers error-handling/validation, and the rest cover UI flows.
 
 AWS deployment uses SAM: `sam build && sam deploy` (requires Docker + SAM CLI). `samconfig.toml` (gitignored) holds the saved deploy parameters.
 
@@ -48,7 +52,7 @@ AWS-only (set via `template.yaml` / SAM, not `.env`):
 
 ### Backend (Node.js / Express)
 
-**`server.js`** — entry point. Mounts routes, serves `public/` as static files, injects env config at `/config.js`, and exposes npm package dist files at `/vendor/leaflet`, `/vendor/markercluster`, `/vendor/exifr`. In AWS mode: redirects `/uploads/*` to S3 presigned URLs and uses a DynamoDB session store. In local mode: serves `uploads/` as static files and uses the default in-memory session store. Exports `{ app }` for `lambda.js`; calls `app.listen` only when not running in Lambda.
+**`server.js`** — entry point. Mounts routes, serves `public/` as static files, injects env config at `/config.js`, and exposes npm package dist files at `/vendor/leaflet`, `/vendor/markercluster`, `/vendor/exifr`. In AWS mode: redirects `/uploads/*` to S3 presigned URLs and uses a DynamoDB session store (whose `get()` treats an unparseable `sess` row as no session rather than erroring). In local mode: serves `uploads/` as static files and uses the default in-memory session store. Exports `{ app }` for `lambda.js`; calls `app.listen` only when not running in Lambda. The JSON body limit is 5mb (so large GPX imports aren't rejected). A terminal error-handling middleware (mounted after the routes) converts async-handler rejections and multer/body-parser errors into JSON responses with a sensible status — so the API never returns Express's default HTML error page, which the client's `res.json()` couldn't parse.
 
 **`lambda.js`** — AWS Lambda entry point. Wraps `app` from `server.js` using `@vendia/serverless-express`.
 
@@ -56,7 +60,11 @@ AWS-only (set via `template.yaml` / SAM, not `.env`):
 
 **`db-sqlite.js`** — SQLite implementation via `better-sqlite3`. Opens synchronously at startup, creates tables on first run. All queries are synchronous prepared statements.
 
-**`db-dynamo.js`** — DynamoDB implementation. All functions are async and return Promises. IDs are UUIDs (vs auto-increment integers in SQLite). Route node `poi_id` is omitted from items (not stored as NULL) when unset, since DynamoDB GSI keys cannot be NULL.
+**`db-dynamo.js`** — DynamoDB implementation. All functions are async and return Promises. IDs are UUIDs (vs auto-increment integers in SQLite). Route node `poi_id` is omitted from items (not stored as NULL) when unset, since DynamoDB GSI keys cannot be NULL. Full-table reads go through `scanAll` (paginates `LastEvaluatedKey` — a bare Scan caps at 1 MB and would silently truncate) and batch deletes through `batchWrite` (retries `UnprocessedItems`), both from **`dynamo-helpers.js`**.
+
+**`dynamo-helpers.js`** — small, client-agnostic DynamoDB helpers (`scanAll`, `batchWrite`) kept separate from `db-dynamo.js` so they can be unit-tested with a fake client (see `test/dynamo-helpers.test.js`); no AWS credentials or network needed.
+
+> **TODO (robustness): DynamoDB multi-step writes aren't atomic.** `splitRoute`, `deletePoiLinkedNodes`/`deletePoi`, `deleteRouteNode`, and bulk `/upload-photos` issue several sequential writes with no rollback, so a mid-sequence failure can leave half-migrated nodes, a route with <2 nodes, or S3 objects with no DB row. SQLite runs these inside a transaction; DynamoDB does not. Fix by folding the ≤100-item cascades into `TransactWriteCommand`s where the item count allows.
 
 Both db modules export the same function signatures:
 - `haversineMeters` / `findNearestPoi` — used by the bulk-upload route to geo-group photos
@@ -72,7 +80,9 @@ Both db modules export the same function signatures:
 - **Local**: `multer.memoryStorage()` → `sharp` in memory → write to `uploads/originals/` and `uploads/thumbs/` via `fs`. Photo URLs are plain `/uploads/...` paths.
 - **AWS**: `multer.memoryStorage()` → `sharp` in memory → `PutObjectCommand` to S3. All POI responses include presigned `url` and `thumb_url` fields (1-hour expiry) so the browser loads photos directly from S3 without routing through Lambda.
 
-`POST /api/upload-photos` is the bulk import path. The client batches uploads in groups of 10 (API Gateway HTTP API has a 10 MB request limit). Groups photos by GPS proximity (10 m threshold). GPS is supplied by the client as a `gpsData` JSON field; server-side `exifr` extraction is the fallback.
+Coordinates on the POI and route-node create/update endpoints are coerced through a `finite()` helper — non-numeric `lat`/`lng` gets a 400 rather than letting `NaN` reach the DB (SQLite stores it as NULL; DynamoDB rejects it). `DELETE /api/pois/:id` removes the DB rows (route nodes, then the POI/photo rows) **before** unlinking the photo files, so a failed file cleanup can't leave a row pointing at a missing file.
+
+`POST /api/upload-photos` is the bulk import path. The client batches uploads in groups of 10 (API Gateway HTTP API has a 10 MB request limit). Groups photos by GPS proximity (10 m threshold). GPS is supplied by the client as a `gpsData` JSON field (parsed defensively — malformed JSON yields a 400); server-side `exifr` extraction is the fallback. `mapLat`/`mapLng` fallbacks use `??` so a genuine `0` coordinate survives.
 
 `PUT /api/photos/:id` updates a photo's `caption`, `direction` (1/2/null), `markerX`/`markerY` (0–1 fractions), and `markerRotation` (0=down, 1=left, 2=right). Called in bulk when the POI edit dialog is saved.
 
