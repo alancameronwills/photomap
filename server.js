@@ -32,7 +32,10 @@ if (process.env.SESSIONS_TABLE) {
         .then(({ Item }) => {
           if (!Item) return cb(null, null);
           if (Item.expires && Item.expires < Math.floor(Date.now() / 1000)) return cb(null, null);
-          cb(null, JSON.parse(Item.sess));
+          let sess;
+          try { sess = JSON.parse(Item.sess); }
+          catch { return cb(null, null); } // corrupt row → treat as no session, don't 500 every request
+          cb(null, sess);
         }).catch(cb);
     }
     set(sid, sess, cb) {

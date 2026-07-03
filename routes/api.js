@@ -175,11 +175,15 @@ router.put('/pois/:id', requireAuth, wrap(async (req, res) => {
 }));
 
 router.delete('/pois/:id', requireAuth, wrap(async (req, res) => {
-  const poi = await Promise.resolve(db.getPoiById(parseId(req.params.id)));
+  const id = parseId(req.params.id);
+  const poi = await Promise.resolve(db.getPoiById(id));
   if (!poi) return res.status(404).json({ error: 'Not found' });
+  // Delete the DB rows first, then the files. A leftover photo file is harmless;
+  // a surviving photo/POI row pointing at an already-deleted file renders as a
+  // broken image. (deletePhoto likewise deletes its row before its files.)
+  const nodeResult = await Promise.resolve(db.deletePoiLinkedNodes(id));
+  await Promise.resolve(db.deletePoi(id));
   await Promise.all(poi.photos.map(p => deletePhotoFiles(p.filename, p.thumb_filename)));
-  const nodeResult = await Promise.resolve(db.deletePoiLinkedNodes(parseId(req.params.id)));
-  await Promise.resolve(db.deletePoi(parseId(req.params.id)));
   res.json({ ok: true, deletedNodeIds: nodeResult.deletedNodeIds, deletedRouteIds: nodeResult.deletedRouteIds });
 }));
 
