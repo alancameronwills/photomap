@@ -6,8 +6,8 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // ── Session store ─────────────────────────────────────────────────────────────
 // On AWS: DynamoDB-backed store (SESSIONS_TABLE env var set by SAM).
@@ -102,6 +102,20 @@ app.use('/vendor/heic2any',      express.static(path.join(__dirname, 'node_modul
 
 app.use('/auth', require('./routes/auth'));
 app.use('/api',  require('./routes/api'));
+
+// ── JSON error handler ────────────────────────────────────────────────────────
+// The API's async handlers are wrapped so their rejections reach here, and multer
+// / body-parser surface their own errors here too. Without this, Express emits its
+// default HTML error page, which the client's res.json() then fails to parse. We
+// always answer with JSON and a sensible status.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const status =
+    err.status || err.statusCode ||
+    (err.name === 'MulterError' ? (err.code === 'LIMIT_FILE_SIZE' ? 413 : 400) : 500);
+  if (status >= 500) console.error('Unhandled request error:', err);
+  res.status(status).json({ error: err.message || 'Internal Server Error' });
+});
 
 // ── Start (skipped in Lambda — lambda.js provides the handler) ────────────────
 

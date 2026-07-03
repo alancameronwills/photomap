@@ -26,7 +26,9 @@ if (IS_AWS) {
     storage: multer.memoryStorage(),
     limits: { fileSize: 50 * 1024 * 1024 },
     fileFilter: (req, file, cb) =>
-      /^image\/(jpeg|jpg|png|gif|webp|heic|heif)$/i.test(file.mimetype) ? cb(null, true) : cb(new Error('Only image files are accepted')),
+      /^image\/(jpeg|jpg|png|gif|webp|heic|heif)$/i.test(file.mimetype)
+        ? cb(null, true)
+        : cb(Object.assign(new Error('Only image files are accepted'), { status: 400 })),
   });
 
   processPhoto = async (file) => {
@@ -70,7 +72,9 @@ if (IS_AWS) {
     storage: multer.memoryStorage(),
     limits: { fileSize: 50 * 1024 * 1024 },
     fileFilter: (req, file, cb) =>
-      /^image\/(jpeg|jpg|png|gif|webp|heic|heif)$/i.test(file.mimetype) ? cb(null, true) : cb(new Error('Only image files are accepted')),
+      /^image\/(jpeg|jpg|png|gif|webp|heic|heif)$/i.test(file.mimetype)
+        ? cb(null, true)
+        : cb(Object.assign(new Error('Only image files are accepted'), { status: 400 })),
   });
 
   processPhoto = async (file) => {
