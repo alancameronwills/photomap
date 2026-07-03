@@ -9,6 +9,7 @@
     "dev": "nodemon --env-file=.env server.js",
     "cy:open": "cypress open",
     "cy:run": "cypress run",
+    "test:unit": "node --test \"test/**/*.test.js\"",
     "test:e2e": "start-server-and-test start http://localhost:3000 cy:run",
     "test:e2e:open": "start-server-and-test start http://localhost:3000 cy:open"
   },

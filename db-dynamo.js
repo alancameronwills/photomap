@@ -1,6 +1,7 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, UpdateCommand, ScanCommand, QueryCommand, TransactWriteCommand, BatchWriteCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, UpdateCommand, QueryCommand, TransactWriteCommand, BatchWriteCommand } = require('@aws-sdk/lib-dynamodb');
 const crypto = require('crypto');
+const { scanAll } = require('./dynamo-helpers');
 
 const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -47,7 +48,7 @@ function resolveProject(projectId) {
 
 async function getAllProjects() {
   await ensureDefaultProject();
-  const { Items = [] } = await docClient.send(new ScanCommand({ TableName: PROJECTS_TABLE }));
+  const Items = await scanAll(docClient, { TableName: PROJECTS_TABLE });
   Items.sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0) || (a.name || '').localeCompare(b.name || ''));
   return Items;
 }
@@ -82,10 +83,10 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
 
 async function findNearestPoi(lat, lng, maxMeters, projectId) {
   const pid = resolveProject(projectId);
-  const { Items = [] } = await docClient.send(new ScanCommand({
+  const Items = await scanAll(docClient, {
     TableName: POIS_TABLE,
     ProjectionExpression: 'id, lat, lng, project_id',
-  }));
+  });
   let best = null, bestDist = maxMeters;
   for (const p of Items.filter(p => (p.project_id || DEFAULT_PROJECT_ID) === pid)) {
     const d = haversineMeters(lat, lng, p.lat, p.lng);
@@ -96,9 +97,9 @@ async function findNearestPoi(lat, lng, maxMeters, projectId) {
 
 async function getAllPois(projectId) {
   const pid = resolveProject(projectId);
-  const [{ Items: poisAll = [] }, { Items: photos = [] }] = await Promise.all([
-    docClient.send(new ScanCommand({ TableName: POIS_TABLE })),
-    docClient.send(new ScanCommand({ TableName: PHOTOS_TABLE })),
+  const [poisAll, photos] = await Promise.all([
+    scanAll(docClient, { TableName: POIS_TABLE }),
+    scanAll(docClient, { TableName: PHOTOS_TABLE }),
   ]);
   const pois = poisAll.filter(p => (p.project_id || DEFAULT_PROJECT_ID) === pid);
   const poiIds = new Set(pois.map(p => p.id));
@@ -258,9 +259,9 @@ async function reorderPhotos(poiId, orderedIds) {
 
 async function getAllRoutes(projectId) {
   const pid = resolveProject(projectId);
-  const [{ Items: routesAll = [] }, { Items: nodes = [] }] = await Promise.all([
-    docClient.send(new ScanCommand({ TableName: ROUTES_TABLE })),
-    docClient.send(new ScanCommand({ TableName: NODES_TABLE })),
+  const [routesAll, nodes] = await Promise.all([
+    scanAll(docClient, { TableName: ROUTES_TABLE }),
+    scanAll(docClient, { TableName: NODES_TABLE }),
   ]);
   const routes = routesAll.filter(r => (r.project_id || DEFAULT_PROJECT_ID) === pid);
   routes.sort((a, b) => a.created_at.localeCompare(b.created_at));
