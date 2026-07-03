@@ -171,6 +171,7 @@ function switchLayer(name) {
   aerialFallback = false;
   updateLayerButtons();
   handleZoomForLayer();
+  window.OfflineCache?.noteLayerChange(name);
 }
 
 function handleZoomForLayer() {
@@ -663,6 +664,7 @@ async function switchProject(id) {
   await Promise.all([loadPois(), loadRoutes()]);
   refreshPoiConnectionStyles();
   if (trackingMode) updateTrackingDisplay();
+  window.OfflineCache?.notePoisChanged();
 }
 
 async function createProjectFromInput() {
@@ -960,6 +962,22 @@ async function loadPois() {
       map.setView(latlngs[0], 14);
     } else {
       map.fitBounds(L.latLngBounds(latlngs).pad(0.2));
+    }
+  }
+}
+
+// Re-fetch POIs and refresh each photo's url/thumb_url in place, without
+// rebuilding markers (a mid-walk marker rebuild would be disruptive). Called
+// by the offline-cache prefetcher when presigned S3 URLs have expired.
+async function refreshPoiPhotoUrls() {
+  const data = await api('GET', '/pois' + projectQuery());
+  for (const p of data) {
+    const poi = pois[p.id];
+    if (!poi || !p.photos) continue;
+    const fresh = Object.fromEntries(p.photos.map(ph => [ph.id, ph]));
+    for (const ph of poi.photos || []) {
+      const f = fresh[ph.id];
+      if (f) { ph.url = f.url; ph.thumb_url = f.thumb_url; }
     }
   }
 }
@@ -3045,6 +3063,7 @@ function setTrackingMode(on) {
   syncMobileMenu();
   updateLiveTrackBtn();
   updateProfileTrackMarker(); // show/hide the chart marker as tracking toggles
+  window.OfflineCache?.setTracking(on);
   // Onboarding cue: flash the crosshair red and pop a tooltip on the off→on
   // transition. Wait a tick so layout (panel position, crosshair offset) has
   // settled before measuring its rect.
@@ -3504,6 +3523,21 @@ if (Math.min(window.innerWidth, window.innerHeight) <= 768 && 'ontouchstart' in 
   await loadProjects(); // resolves currentProjectId (from URL or default) before loading data
   await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
   refreshPoiConnectionStyles(); // POIs and routes loaded in parallel — set borders now both are in
+  // Offline cache: register the service worker and start the Track-mode
+  // prefetch loop only now that POIs are loaded — tracking may have
+  // auto-enabled above before any data (or OfflineCache hooks) existed.
+  window.OfflineCache?.init({
+    getActiveLayerName: () => activeLayerName,
+    getFallbackLatLng: () => {
+      const { x, y } = getCrosshairPixel();
+      const ll = map.containerPointToLatLng([x, y]);
+      return { lat: ll.lat, lng: ll.lng };
+    },
+    getPois: () => pois,
+    getProjectId: () => currentProjectId,
+    refreshPoiPhotoUrls,
+  });
+  window.OfflineCache?.setTracking(trackingMode);
   const overlay = document.getElementById('loading-overlay');
   overlay.classList.add('hidden');
   overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });

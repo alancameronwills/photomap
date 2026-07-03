@@ -193,6 +193,17 @@ Resources:
 
   PhotomapBucket:
     Type: AWS::S3::Bucket
+    Properties:
+      # The offline-cache prefetcher (public/offline-cache.js) fetches presigned
+      # photo URLs with mode:'cors' so cached responses are non-opaque — opaque
+      # entries are heavily padded in browser storage-quota accounting, and
+      # their status codes are unreadable (needed to detect expired presigns).
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET, HEAD]
+            AllowedOrigins: ['*']
+            AllowedHeaders: ['*']
+            MaxAge: 3600
 
 Outputs:
   ApiUrl:

@@ -949,6 +949,16 @@ body, html {
 }
 .toast.hidden { display: none; }
 
+/* Offline-cache status: full toast while the initial prefetch reports
+   progress; compact persistent badge while in a signal drop-out. */
+#offline-status.offline-badge {
+  min-width: 0;
+  padding: 6px 12px;
+  font-size: 0.78rem;
+  color: #f0b45c;
+  border-color: rgba(240,180,92,0.35);
+}
+
 #upload-progress-bar {
   height: 4px;
   background: rgba(255,255,255,0.1);

@@ -72,7 +72,14 @@ app.get('/config.js', (req, res) => {
 
 // ── Static files ──────────────────────────────────────────────────────────────
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    // Browsers must revalidate the service worker on every load, or a stale
+    // sw.js (heuristically cached by the browser or API Gateway) can pin old
+    // caching logic for hours after a deploy.
+    if (filePath.endsWith('sw.js')) res.set('Cache-Control', 'no-cache');
+  },
+}));
 
 if (process.env.PHOTOS_BUCKET) {
   // AWS: redirect /uploads/* to S3 via a presigned URL
