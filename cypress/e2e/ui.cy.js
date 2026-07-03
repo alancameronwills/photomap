@@ -56,7 +56,10 @@ describe('Projects dialog', () => {
 describe('New POI dialog (signed in)', () => {
   beforeEach(() => {
     cy.loginApi(); // session cookie set before the page loads
-    cy.visitApp();
+    // Park the view over empty ground (mid-Wales, no POIs) so the centre click
+    // lands on the map itself rather than an existing marker — otherwise the map
+    // fits to all POIs and a marker sits under the crosshair.
+    cy.visitApp({ mapView: { lat: 52.5, lng: -3.0, zoom: 13 } });
     // Already authenticated, so Edit drops straight into edit mode.
     cy.get('#btn-edit-mode').click();
     cy.get('#edit-indicator').should('not.have.class', 'hidden');

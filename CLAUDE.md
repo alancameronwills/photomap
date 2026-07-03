@@ -195,13 +195,15 @@ State variables: `routeEditMode`, `waitingForRouteStart`, `activeRouteId`, `exte
 ### Data model
 
 ```
-pois         (id, lat, lng, title, note, created_at, updated_at)
-  └── photos (id, poi_id, filename, thumb_filename, original_name, order_index, created_at,
+pois         (id, lat, lng, title, note, project_id, created_at, updated_at)
+  └── photos (id, poi_id, filename, thumb_filename, original_name, order_index, project_id, created_at,
               caption, direction, marker_x, marker_y, marker_rotation)
 
-routes       (id, name, color, created_at)
-  └── route_nodes (id, route_id, order_index REAL, lat, lng, poi_id → pois.id)
+routes       (id, name, color, project_id, created_at)
+  └── route_nodes (id, route_id, order_index REAL, lat, lng, poi_id → pois.id, project_id)
 ```
+
+- `project_id` on `photos`/`route_nodes` mirrors the parent POI/route's project, set at insert time (SQLite via an `INSERT … SELECT` subquery; DynamoDB copied from a sibling node or fetched from the parent). It lets a project's children be fetched without joining every project's rows in memory. **SQLite** filters children by `project_id` directly (a startup migration backfills existing rows from their parents). **DynamoDB** has no backfill, so `getAllPois`/`getAllRoutes` scope children by parent-membership (the set of the project's POI/route ids) rather than the child's own `project_id`, keeping legacy rows correct; the stored `project_id` is there for a future `project_id` GSI to replace the full-table scans.
 
 - `photos.direction` — integer 1 or 2 (or null); used for direction-preference filtering/sorting.
 - `photos.marker_x`, `photos.marker_y` — 0–1 fractions of image dimensions; position of the arrow marker tip.

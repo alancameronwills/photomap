@@ -101,8 +101,10 @@ async function getAllPois(projectId) {
     docClient.send(new ScanCommand({ TableName: PHOTOS_TABLE })),
   ]);
   const pois = poisAll.filter(p => (p.project_id || DEFAULT_PROJECT_ID) === pid);
+  const poiIds = new Set(pois.map(p => p.id));
   const photosByPoi = {};
   for (const ph of photos) {
+    if (!poiIds.has(ph.poi_id)) continue; // scope to this project via parent membership
     if (!photosByPoi[ph.poi_id]) photosByPoi[ph.poi_id] = [];
     photosByPoi[ph.poi_id].push(ph);
   }
@@ -172,10 +174,14 @@ async function deletePoi(id) {
 }
 
 async function addPhoto(poiId, filename, thumbFilename, originalName, orderIndex) {
+  const { Item: poi } = await docClient.send(new GetCommand({
+    TableName: POIS_TABLE, Key: { id: poiId }, ProjectionExpression: 'project_id',
+  }));
   const id = crypto.randomUUID();
   const item = {
     id, poi_id: poiId, filename, thumb_filename: thumbFilename,
-    original_name: originalName, order_index: orderIndex || 0, created_at: now(),
+    original_name: originalName, order_index: orderIndex || 0,
+    project_id: (poi && poi.project_id) || DEFAULT_PROJECT_ID, created_at: now(),
   };
   await docClient.send(new PutCommand({ TableName: PHOTOS_TABLE, Item: item }));
   return item;
@@ -258,8 +264,10 @@ async function getAllRoutes(projectId) {
   ]);
   const routes = routesAll.filter(r => (r.project_id || DEFAULT_PROJECT_ID) === pid);
   routes.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const routeIds = new Set(routes.map(r => r.id));
   const byRoute = {};
   for (const n of nodes) {
+    if (!routeIds.has(n.route_id)) continue; // scope to this project via parent membership
     if (!byRoute[n.route_id]) byRoute[n.route_id] = [];
     byRoute[n.route_id].push(n);
   }
@@ -379,6 +387,15 @@ async function splitRoute(routeId, splitNodeId) {
   return { splitNodeId, originalRouteId: routeId, headDeleted, deletedHeadNodeIds, deletedTailNodeIds, newRoute };
 }
 
+// A node's project always matches its route's. Used when no sibling node is
+// available to copy project_id from (e.g. the first node added to a route).
+async function routeProjectId(routeId) {
+  const { Item } = await docClient.send(new GetCommand({
+    TableName: ROUTES_TABLE, Key: { id: routeId }, ProjectionExpression: 'project_id',
+  }));
+  return (Item && Item.project_id) || DEFAULT_PROJECT_ID;
+}
+
 async function insertRouteNode(routeId, afterNodeId, lat, lng, poiId) {
   const { Item: after } = await docClient.send(new GetCommand({ TableName: NODES_TABLE, Key: { id: afterNodeId } }));
   if (!after) return null;
@@ -392,8 +409,9 @@ async function insertRouteNode(routeId, afterNodeId, lat, lng, poiId) {
   }));
   const next = nextItems[0];
   const orderIndex = next ? (after.order_index + next.order_index) / 2 : after.order_index + 1;
+  const project_id = after.project_id || await routeProjectId(routeId);
   const id = crypto.randomUUID();
-  const item = { id, route_id: routeId, order_index: orderIndex, lat, lng, ...(poiId ? { poi_id: poiId } : {}) };
+  const item = { id, route_id: routeId, order_index: orderIndex, lat, lng, project_id, ...(poiId ? { poi_id: poiId } : {}) };
   await docClient.send(new PutCommand({ TableName: NODES_TABLE, Item: item }));
   return item;
 }
@@ -411,8 +429,9 @@ async function addRouteNode(routeId, lat, lng, poiId, prepend = false) {
   const orderIndex = prepend
     ? (edge?.order_index ?? 0) - 1
     : (edge?.order_index ?? -1) + 1;
+  const project_id = (edge && edge.project_id) || await routeProjectId(routeId);
   const id = crypto.randomUUID();
-  const item = { id, route_id: routeId, order_index: orderIndex, lat, lng, ...(poiId ? { poi_id: poiId } : {}) };
+  const item = { id, route_id: routeId, order_index: orderIndex, lat, lng, project_id, ...(poiId ? { poi_id: poiId } : {}) };
   await docClient.send(new PutCommand({ TableName: NODES_TABLE, Item: item }));
   return item;
 }

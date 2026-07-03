@@ -11,10 +11,15 @@ export function silenceHelp(win) {
 // Visit the app and wait for the startup Promise.all to clear the loading
 // overlay (it removes itself from the DOM). Pass { help: true } to allow the
 // welcome modal (used by the help-specific test).
+// Pass { mapView: { lat, lng, zoom } } to pin the starting view. app.js reads
+// localStorage.mapView before constructing the map and, when it's set, skips the
+// fit-to-all-POIs — so tests that click "empty" map can park the view away from
+// any marker instead of landing on one.
 Cypress.Commands.add('visitApp', (opts = {}) => {
   cy.visit('/', {
     onBeforeLoad(win) {
       if (!opts.help) silenceHelp(win);
+      if (opts.mapView) win.localStorage.setItem('mapView', JSON.stringify(opts.mapView));
     },
   });
   // Once startup data has loaded the overlay gets the `hidden` class

@@ -18,6 +18,10 @@ try { db.exec('ALTER TABLE routes ADD COLUMN dir2_name TEXT'); } catch (_) {}
 // these ALTERs add it to pre-existing tables.
 try { db.exec('ALTER TABLE pois ADD COLUMN project_id INTEGER'); } catch (_) {}
 try { db.exec('ALTER TABLE routes ADD COLUMN project_id INTEGER'); } catch (_) {}
+// Children carry their parent's project_id so a project's photos/nodes can be
+// fetched directly rather than joined in memory. Backfilled below from parents.
+try { db.exec('ALTER TABLE photos ADD COLUMN project_id INTEGER'); } catch (_) {}
+try { db.exec('ALTER TABLE route_nodes ADD COLUMN project_id INTEGER'); } catch (_) {}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS projects (
@@ -42,7 +46,8 @@ db.exec(`
     order_index INTEGER NOT NULL DEFAULT 0,
     lat REAL NOT NULL,
     lng REAL NOT NULL,
-    poi_id INTEGER REFERENCES pois(id) ON DELETE SET NULL
+    poi_id INTEGER REFERENCES pois(id) ON DELETE SET NULL,
+    project_id INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS pois (
@@ -63,7 +68,8 @@ db.exec(`
     thumb_filename TEXT,
     original_name TEXT,
     order_index INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now')),
+    project_id INTEGER
   );
 `);
 
@@ -83,6 +89,10 @@ function ensureDefaultProject() {
   _defaultProjectId = row.id;
   db.prepare('UPDATE pois   SET project_id = ? WHERE project_id IS NULL').run(_defaultProjectId);
   db.prepare('UPDATE routes SET project_id = ? WHERE project_id IS NULL').run(_defaultProjectId);
+  // Backfill children from their now-resolved parents. Idempotent (only touches
+  // NULLs), so it re-runs harmlessly on each restart and self-heals stray NULLs.
+  db.prepare('UPDATE photos      SET project_id = (SELECT project_id FROM pois   WHERE pois.id   = photos.poi_id)       WHERE project_id IS NULL').run();
+  db.prepare('UPDATE route_nodes SET project_id = (SELECT project_id FROM routes WHERE routes.id = route_nodes.route_id) WHERE project_id IS NULL').run();
   return _defaultProjectId;
 }
 ensureDefaultProject();
@@ -141,7 +151,9 @@ function getAllPois(projectId) {
   const pois = isDefault
     ? db.prepare('SELECT * FROM pois WHERE project_id = ? OR project_id IS NULL ORDER BY created_at DESC').all(pid)
     : db.prepare('SELECT * FROM pois WHERE project_id = ? ORDER BY created_at DESC').all(pid);
-  const photos = db.prepare('SELECT * FROM photos ORDER BY order_index ASC, id ASC').all();
+  const photos = isDefault
+    ? db.prepare('SELECT * FROM photos WHERE project_id = ? OR project_id IS NULL ORDER BY order_index ASC, id ASC').all(pid)
+    : db.prepare('SELECT * FROM photos WHERE project_id = ? ORDER BY order_index ASC, id ASC').all(pid);
   const photosByPoi = {};
   for (const ph of photos) {
     if (!photosByPoi[ph.poi_id]) photosByPoi[ph.poi_id] = [];
@@ -190,8 +202,9 @@ function deletePoi(id) {
 
 function addPhoto(poiId, filename, thumbFilename, originalName, orderIndex) {
   const result = db.prepare(
-    'INSERT INTO photos (poi_id, filename, thumb_filename, original_name, order_index) VALUES (?, ?, ?, ?, ?)'
-  ).run(poiId, filename, thumbFilename, originalName, orderIndex || 0);
+    'INSERT INTO photos (poi_id, filename, thumb_filename, original_name, order_index, project_id) ' +
+    'VALUES (?, ?, ?, ?, ?, (SELECT project_id FROM pois WHERE id = ?))'
+  ).run(poiId, filename, thumbFilename, originalName, orderIndex || 0, poiId);
   return db.prepare('SELECT * FROM photos WHERE id = ?').get(result.lastInsertRowid);
 }
 
@@ -230,7 +243,9 @@ function getAllRoutes(projectId) {
   const routes = isDefault
     ? db.prepare('SELECT * FROM routes WHERE project_id = ? OR project_id IS NULL ORDER BY created_at ASC').all(pid)
     : db.prepare('SELECT * FROM routes WHERE project_id = ? ORDER BY created_at ASC').all(pid);
-  const nodes = db.prepare('SELECT * FROM route_nodes ORDER BY route_id, order_index ASC, id ASC').all();
+  const nodes = isDefault
+    ? db.prepare('SELECT * FROM route_nodes WHERE project_id = ? OR project_id IS NULL ORDER BY route_id, order_index ASC, id ASC').all(pid)
+    : db.prepare('SELECT * FROM route_nodes WHERE project_id = ? ORDER BY route_id, order_index ASC, id ASC').all(pid);
   const byRoute = {};
   for (const n of nodes) {
     if (!byRoute[n.route_id]) byRoute[n.route_id] = [];
@@ -314,8 +329,9 @@ function insertRouteNode(routeId, afterNodeId, lat, lng, poiId) {
   ).get(routeId, after.order_index);
   const orderIndex = next ? (after.order_index + next.order_index) / 2 : after.order_index + 1;
   const r = db.prepare(
-    'INSERT INTO route_nodes (route_id, order_index, lat, lng, poi_id) VALUES (?, ?, ?, ?, ?)'
-  ).run(routeId, orderIndex, lat, lng, poiId || null);
+    'INSERT INTO route_nodes (route_id, order_index, lat, lng, poi_id, project_id) ' +
+    'VALUES (?, ?, ?, ?, ?, (SELECT project_id FROM routes WHERE id = ?))'
+  ).run(routeId, orderIndex, lat, lng, poiId || null, routeId);
   return db.prepare('SELECT * FROM route_nodes WHERE id = ?').get(r.lastInsertRowid);
 }
 
@@ -329,8 +345,9 @@ function addRouteNode(routeId, lat, lng, poiId, prepend = false) {
     orderIndex = (max?.m ?? -1) + 1;
   }
   const r = db.prepare(
-    'INSERT INTO route_nodes (route_id, order_index, lat, lng, poi_id) VALUES (?, ?, ?, ?, ?)'
-  ).run(routeId, orderIndex, lat, lng, poiId || null);
+    'INSERT INTO route_nodes (route_id, order_index, lat, lng, poi_id, project_id) ' +
+    'VALUES (?, ?, ?, ?, ?, (SELECT project_id FROM routes WHERE id = ?))'
+  ).run(routeId, orderIndex, lat, lng, poiId || null, routeId);
   return db.prepare('SELECT * FROM route_nodes WHERE id = ?').get(r.lastInsertRowid);
 }
 
