@@ -112,21 +112,36 @@ async function photoCacheFirst(key, request) {
 
 // Network-first with a timeout, falling back to the cached copy, then to a
 // synthesized fallback body (if given) so callers never see a rejection.
+//
+// The timeout only decides how long we wait before serving a fallback — it does
+// NOT abort the network request. A slow-but-successful response (e.g. the multi-
+// MB /api/pois payload, which can take several seconds) keeps running in the
+// background and refreshes the cache, so the next load is fresh. Aborting it
+// would leave the cache permanently stale whenever the server is slower than the
+// timeout.
 async function networkFirst(request, cacheName, key, timeoutMs, fallbackBody) {
   const cache = await caches.open(cacheName);
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const resp = await fetch(request, { signal: ctrl.signal });
-    clearTimeout(timer);
+  const network = fetch(request).then((resp) => {
     if (resp.ok) cache.put(key, resp.clone()).catch(() => {});
     return resp;
+  });
+
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  });
+
+  try {
+    const resp = await Promise.race([network, timeout]);
+    if (resp) { clearTimeout(timer); return resp; } // network won the race
   } catch (e) {
-    const hit = await cache.match(key);
-    if (hit) return hit;
-    if (fallbackBody !== undefined) return jsonResponse(fallbackBody);
-    throw e;
+    // network rejected (likely offline) — fall through to cache/fallback
   }
+  network.catch(() => {}); // keep filling the cache; swallow a later rejection
+  const hit = await cache.match(key);
+  if (hit) return hit;
+  if (fallbackBody !== undefined) return jsonResponse(fallbackBody);
+  return network; // no cache, no fallback: wait for the real response
 }
 
 // Stale-while-revalidate for the app shell: serve the cached copy immediately,
@@ -167,7 +182,10 @@ self.addEventListener('fetch', (event) => {
 
   const path = url.pathname;
   if (path === '/api/pois' || path === '/api/routes') {
-    event.respondWith(networkFirst(req, API, path + url.search, 4000, []));
+    // /api/pois is a multi-MB payload that regularly takes ~6s; give it ample
+    // headroom so online users get fresh data on this load rather than a stale
+    // fallback. (An offline fetch rejects fast regardless of this value.)
+    event.respondWith(networkFirst(req, API, path + url.search, 15000, []));
     return;
   }
   if (path === '/api/projects') {
