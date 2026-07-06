@@ -15,7 +15,7 @@
   // Cache Storage names shared by sw.js and offline-cache.js. Bump the
   // version on any change to cache key formats so stale caches are dropped
   // when the new service worker activates.
-  const CACHE_VERSION = 'v2';
+  const CACHE_VERSION = 'v20260706213943';
   const CACHES = {
     shell: `pm-shell-${CACHE_VERSION}`,
     tiles: `pm-tiles-${CACHE_VERSION}`,

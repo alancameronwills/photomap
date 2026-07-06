@@ -6,6 +6,8 @@
   "scripts": {
     "prestart": "node kill-server.js",
     "start": "node --env-file=.env server.js",
+    "bump-cache": "node scripts/bump-cache-version.js",
+    "deploy": "sam build --use-container && sam deploy",
     "dev": "nodemon --env-file=.env server.js",
     "cy:open": "cypress open",
     "cy:run": "cypress run",

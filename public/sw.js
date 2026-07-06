@@ -1,9 +1,12 @@
-/* ── Service worker: offline cache for Track mode ─────────────────────────────
- * Serves map tiles, photos, API data and the app shell from Cache Storage so
- * the app keeps working through mobile signal drop-outs. The page-side
- * prefetch manager (offline-cache.js) fills the same caches proactively;
- * this worker fills them opportunistically during normal browsing and serves
- * from them when the network fails.
+/* ── Service worker: offline safety net for Track mode ───────────────────────
+ * Strategy: NETWORK-FIRST for everything (tiles, photos, API data, app shell).
+ * While the network works, the worker always serves the fresh network response
+ * and is otherwise transparent — it never serves cached content online, so it
+ * can't interfere with normal operation (no stale app shell, API, tiles or
+ * photos). The caches are purely an offline fallback for mobile signal
+ * drop-outs during a walk: they're charged with nearby content by the page-side
+ * prefetch manager (offline-cache.js) while Track mode is on, and only read
+ * when a fetch fails (i.e. we've gone offline).
  *
  * Cache names and their version live in tile-math.js (TileMath.CACHES);
  * bump CACHE_VERSION there on any change to cache key formats or routing so
@@ -41,7 +44,7 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(SHELL).then((cache) =>
       // allSettled: a single missing asset mustn't block install — the
-      // stale-while-revalidate route repairs any gap on first online use.
+      // network-first route repairs any gap on the next online load.
       Promise.allSettled(SHELL_URLS.map((u) => cache.add(u)))
     ).then(() => self.skipWaiting())
   );
@@ -80,85 +83,61 @@ function jsonResponse(body) {
   });
 }
 
-// Cache-first under a normalised synthetic key. On a miss the request is
-// re-issued as a cors fetch of the real URL (all our tile hosts send
-// Access-Control-Allow-Origin: *) so the cached response is non-opaque —
-// opaque responses are heavily padded in browser quota accounting.
-async function tileCacheFirst(key, url) {
-  const cache = await caches.open(TILES);
-  const hit = await cache.match(key);
-  if (hit) return hit;
-  const resp = await fetch(url, { mode: 'cors' });
-  if (resp.ok) cache.put(key, resp.clone()).catch(() => {});
-  return resp;
-}
+// ── Network-first, cache read only on failure ────────────────────────────────
+// Every strategy below hits the network first and returns its response whenever
+// the fetch resolves — so online we always serve fresh content, never a stale
+// cache entry, and the online path touches Cache Storage not at all. The cache
+// is READ only when the fetch REJECTS (the device is offline). The worker never
+// WRITES to the cache: it's filled by the shell precache (on install) and, for
+// nearby content, by the prefetcher (offline-cache.js) while Track mode is on —
+// so nothing accumulates during ordinary online browsing.
 
-// Cache-first for photos. Prefers a cors fetch (accurate quota, readable
-// status); falls back to no-cors — an opaque response still displays in <img>
-// and is better than nothing if S3 CORS isn't configured yet.
-async function photoCacheFirst(key, request) {
-  const cache = await caches.open(PHOTOS);
-  const hit = await cache.match(key);
-  if (hit) return hit;
-  let resp;
-  try {
-    resp = await fetch(request.url, { mode: 'cors' });
-  } catch (e) {
-    resp = await fetch(request.url, { mode: 'no-cors' });
-  }
-  if (resp.ok || resp.type === 'opaque') cache.put(key, resp.clone()).catch(() => {});
-  return resp;
-}
-
-// Network-first with a timeout, falling back to the cached copy, then to a
-// synthesized fallback body (if given) so callers never see a rejection.
-//
-// The timeout only decides how long we wait before serving a fallback — it does
-// NOT abort the network request. A slow-but-successful response (e.g. the multi-
-// MB /api/pois payload, which can take several seconds) keeps running in the
-// background and refreshes the cache, so the next load is fresh. Aborting it
-// would leave the cache permanently stale whenever the server is slower than the
-// timeout.
-async function networkFirst(request, cacheName, key, timeoutMs, fallbackBody) {
+async function cachedFallback(cacheName, key, fallbackBody) {
   const cache = await caches.open(cacheName);
-  const network = fetch(request).then((resp) => {
-    if (resp.ok) cache.put(key, resp.clone()).catch(() => {});
-    return resp;
-  });
-
-  let timer;
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(undefined), timeoutMs);
-  });
-
-  try {
-    const resp = await Promise.race([network, timeout]);
-    if (resp) { clearTimeout(timer); return resp; } // network won the race
-  } catch (e) {
-    // network rejected (likely offline) — fall through to cache/fallback
-  }
-  network.catch(() => {}); // keep filling the cache; swallow a later rejection
   const hit = await cache.match(key);
   if (hit) return hit;
   if (fallbackBody !== undefined) return jsonResponse(fallbackBody);
-  return network; // no cache, no fallback: wait for the real response
+  return null;
 }
 
-// Stale-while-revalidate for the app shell: serve the cached copy immediately,
-// refresh it in the background.
-async function staleWhileRevalidate(request, key) {
-  const cache = await caches.open(SHELL);
-  const hit = await cache.match(key);
-  const refresh = fetch(request)
-    .then((resp) => {
-      if (resp.ok) cache.put(key, resp.clone()).catch(() => {});
-      return resp;
-    });
-  if (hit) {
-    refresh.catch(() => {}); // background refresh may fail offline — fine
-    return hit;
+// Same-origin requests (app shell, API). On offline failure: cached copy, then
+// a synthesized fallback body (if given) so the startup fetches never reject.
+async function networkFirst(request, cacheName, key, fallbackBody) {
+  try {
+    return await fetch(request);
+  } catch (e) {
+    const fb = await cachedFallback(cacheName, key, fallbackBody);
+    if (fb) return fb;
+    throw e;
   }
-  return refresh;
+}
+
+// Tiles, keyed by a normalised synthetic key (folds a/b/c subdomains and the
+// MapTiler ?key= so the cache entry matches what the prefetcher stored).
+async function tileNetworkFirst(key, url) {
+  try {
+    return await fetch(url, { mode: 'cors' });
+  } catch (e) {
+    const fb = await cachedFallback(TILES, key);
+    if (fb) return fb;
+    throw e;
+  }
+}
+
+// Photos. Prefers a cors fetch, falling back to no-cors on a CORS error. Only a
+// genuine network failure (both modes reject) falls through to the cache.
+async function photoNetworkFirst(key, request) {
+  try {
+    try {
+      return await fetch(request.url, { mode: 'cors' });
+    } catch (e) {
+      return await fetch(request.url, { mode: 'no-cors' });
+    }
+  } catch (e) {
+    const fb = await cachedFallback(PHOTOS, key);
+    if (fb) return fb;
+    throw e;
+  }
 }
 
 self.addEventListener('fetch', (event) => {
@@ -167,13 +146,13 @@ self.addEventListener('fetch', (event) => {
 
   const tileKey = TileMath.normaliseTileKey(req.url);
   if (tileKey) {
-    event.respondWith(tileCacheFirst(tileKey, req.url));
+    event.respondWith(tileNetworkFirst(tileKey, req.url));
     return;
   }
 
   const photoKey = TileMath.normalisePhotoKey(req.url);
   if (photoKey) {
-    event.respondWith(photoCacheFirst(photoKey, req));
+    event.respondWith(photoNetworkFirst(photoKey, req));
     return;
   }
 
@@ -181,23 +160,22 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return; // foreign non-tile/photo: untouched
 
   const path = url.pathname;
+  // API data: network-first with a synthesized empty fallback so the startup
+  // Promise.all still resolves when we're offline with a cold cache.
   if (path === '/api/pois' || path === '/api/routes') {
-    // /api/pois is a multi-MB payload that regularly takes ~6s; give it ample
-    // headroom so online users get fresh data on this load rather than a stale
-    // fallback. (An offline fetch rejects fast regardless of this value.)
-    event.respondWith(networkFirst(req, API, path + url.search, 15000, []));
+    event.respondWith(networkFirst(req, API, path + url.search, []));
     return;
   }
   if (path === '/api/projects') {
-    event.respondWith(networkFirst(req, API, path, 4000, { projects: [], defaultId: null }));
+    event.respondWith(networkFirst(req, API, path, { projects: [], defaultId: null }));
     return;
   }
   if (path === '/auth/status') {
-    event.respondWith(networkFirst(req, API, path, 3000, { authenticated: false }));
+    event.respondWith(networkFirst(req, API, path, { authenticated: false }));
     return;
   }
   if (path === '/config.js') {
-    event.respondWith(networkFirst(req, SHELL, path, 3000));
+    event.respondWith(networkFirst(req, SHELL, path));
     return;
   }
   // Other API/auth/upload traffic (writes, OAuth redirects, sw.js itself)
@@ -205,5 +183,5 @@ self.addEventListener('fetch', (event) => {
   if (path.startsWith('/api/') || path.startsWith('/auth/') || path.startsWith('/uploads/') || path === '/sw.js') return;
 
   // App shell: navigations and same-origin static assets.
-  event.respondWith(staleWhileRevalidate(req, req.mode === 'navigate' ? '/' : path));
+  event.respondWith(networkFirst(req, SHELL, req.mode === 'navigate' ? '/' : path));
 });
