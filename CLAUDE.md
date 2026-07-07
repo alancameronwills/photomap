@@ -54,7 +54,7 @@ AWS-only (set via `template.yaml` / SAM, not `.env`):
 
 **`server.js`** — entry point. Mounts routes, serves `public/` as static files, injects env config at `/config.js`, and exposes npm package dist files at `/vendor/leaflet`, `/vendor/markercluster`, `/vendor/exifr`. In AWS mode: redirects `/uploads/*` to S3 presigned URLs and uses a DynamoDB session store (whose `get()` treats an unparseable `sess` row as no session rather than erroring). In local mode: serves `uploads/` as static files and uses the default in-memory session store. Exports `{ app }` for `lambda.js`; calls `app.listen` only when not running in Lambda. The JSON body limit is 5mb (so large GPX imports aren't rejected). A terminal error-handling middleware (mounted after the routes) converts async-handler rejections and multer/body-parser errors into JSON responses with a sensible status — so the API never returns Express's default HTML error page, which the client's `res.json()` couldn't parse.
 
-**`lambda.js`** — AWS Lambda entry point. Wraps `app` from `server.js` using `@vendia/serverless-express`.
+**`lambda.js`** — AWS Lambda entry point. Wraps `app` from `server.js` using `@vendia/serverless-express`. That library returns a callback-style `(event, context, callback)` handler, which the **nodejs24.x** runtime rejects at init (`Runtime.CallbackHandlerDeprecated` — every request 500s); so we export a 2-arg **async** handler (`async (event, context) => proxy(event, context)`), relying on serverless-express returning a promise when no callback is passed. Keep this wrapper when bumping the Lambda runtime.
 
 **`db.js`** — thin router: loads `db-dynamo.js` or `db-sqlite.js` based on `POIS_TABLE`.
 
@@ -92,7 +92,7 @@ Coordinates on the POI and route-node create/update endpoints are coerced throug
 
 **`middleware/requireAuth.js`** — guards all write endpoints; reads `req.session.authenticated`.
 
-**`template.yaml`** — AWS SAM template. Defines Lambda function, API Gateway HTTP API, five DynamoDB tables (PAY_PER_REQUEST), and S3 bucket. The bucket has a GET/HEAD `CorsConfiguration` so the offline-cache prefetcher can fetch presigned photo URLs with `mode:'cors'` (non-opaque cached responses; readable 403s for expired presigns). `scripts/deploy.sh` wraps `sam build && sam deploy`.
+**`template.yaml`** — AWS SAM template. Defines Lambda function, API Gateway HTTP API, five DynamoDB tables (PAY_PER_REQUEST), and S3 bucket. The Lambda `Runtime` is **nodejs24.x** — when bumping it, watch for two things: AWS periodically deprecates older Node runtimes (`sam validate --lint` flags a deprecated one as E2533, and updates get disabled after the deprecation date), and Node 24+ requires the async-handler wrapper in `lambda.js` (see above). The bucket has a GET/HEAD `CorsConfiguration` so the offline-cache prefetcher can fetch presigned photo URLs with `mode:'cors'` (non-opaque cached responses; readable 403s for expired presigns). `scripts/deploy.sh` wraps `sam build && sam deploy`.
 
 ### Frontend (`public/`)
 
