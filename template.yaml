@@ -194,16 +194,42 @@ Resources:
   PhotomapBucket:
     Type: AWS::S3::Bucket
     Properties:
-      # The offline-cache prefetcher (public/offline-cache.js) fetches presigned
-      # photo URLs with mode:'cors' so cached responses are non-opaque — opaque
-      # entries are heavily padded in browser storage-quota accounting, and
-      # their status codes are unreadable (needed to detect expired presigns).
+      # Photos are public-read (see PhotomapBucketPolicy). Reads need no auth —
+      # access control is only enforced on upload (requireAuth). Allow a public
+      # bucket policy while still blocking public ACLs (we grant via policy, not
+      # per-object ACLs).
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      # The offline-cache prefetcher (public/offline-cache.js) fetches photo URLs
+      # with mode:'cors' so cached responses are non-opaque — opaque entries are
+      # heavily padded in browser storage-quota accounting.
       CorsConfiguration:
         CorsRules:
           - AllowedMethods: [GET, HEAD]
             AllowedOrigins: ['*']
             AllowedHeaders: ['*']
             MaxAge: 3600
+
+  # Public read access to photos only (originals/ and thumbs/ prefixes). No
+  # listing, no writes — uploads go through the auth-gated API. Stable public
+  # URLs let /api/pois skip presigning and let browsers/SW cache photos long-term.
+  PhotomapBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PhotomapBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadPhotos
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource:
+              - !Sub '${PhotomapBucket.Arn}/originals/*'
+              - !Sub '${PhotomapBucket.Arn}/thumbs/*'
 
 Outputs:
   ApiUrl:

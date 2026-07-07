@@ -82,16 +82,16 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 
 if (process.env.PHOTOS_BUCKET) {
-  // AWS: redirect /uploads/* to S3 via a presigned URL
-  const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
-  const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-  const s3 = new S3Client({});
-  app.use('/uploads', async (req, res) => {
-    try {
-      const key = req.path.replace(/^\//, '');
-      const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket: process.env.PHOTOS_BUCKET, Key: key }), { expiresIn: 3600 });
-      res.redirect(302, url);
-    } catch (e) { res.status(404).end(); }
+  // AWS: redirect /uploads/* to the photo's stable public S3 URL. Photos are
+  // served from a public-read bucket (see PhotomapBucketPolicy in template.yaml),
+  // so no presigning is needed. The API already returns these URLs directly on
+  // POIs; this route is only a fallback (e.g. GPX/KML export links).
+  const region = process.env.AWS_REGION || 'eu-west-2';
+  const base = `https://${process.env.PHOTOS_BUCKET}.s3.${region}.amazonaws.com`;
+  app.use('/uploads', (req, res) => {
+    const key = req.path.replace(/^\//, '');
+    if (!key) return res.status(404).end();
+    res.redirect(302, `${base}/${key}`);
   });
 } else {
   // Local: ensure upload dirs exist and serve statically

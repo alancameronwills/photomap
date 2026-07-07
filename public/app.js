@@ -3521,8 +3521,20 @@ if (Math.min(window.innerWidth, window.innerHeight) <= 768 && 'ontouchstart' in 
 }
 (async () => {
   await loadProjects(); // resolves currentProjectId (from URL or default) before loading data
-  await Promise.all([checkAuth(), loadPois(), loadRoutes()]);
-  refreshPoiConnectionStyles(); // POIs and routes loaded in parallel — set borders now both are in
+
+  // Fast first paint: reveal the map and routes as soon as they're ready
+  // (~1s) instead of blocking the loading overlay on the much slower POI
+  // fetch (a large presigned payload). POI markers then stream in below.
+  await Promise.all([checkAuth(), loadRoutes()]);
+  const overlay = document.getElementById('loading-overlay');
+  overlay.classList.add('hidden');
+  overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+  maybeShowHelp('welcome');
+
+  // POIs load in the background; markers appear when the fetch resolves.
+  await loadPois();
+  refreshPoiConnectionStyles(); // POIs and routes both in — set connection borders
+
   // Offline cache: register the service worker and start the Track-mode
   // prefetch loop only now that POIs are loaded — tracking may have
   // auto-enabled above before any data (or OfflineCache hooks) existed.
@@ -3538,9 +3550,6 @@ if (Math.min(window.innerWidth, window.innerHeight) <= 768 && 'ontouchstart' in 
     refreshPoiPhotoUrls,
   });
   window.OfflineCache?.setTracking(trackingMode);
-  const overlay = document.getElementById('loading-overlay');
-  overlay.classList.add('hidden');
-  overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
   if (trackingMode) updateTrackingDisplay();
   // If the user landed back here from an OAuth redirect that started with a
   // click on Edit, drop them straight into edit mode.
@@ -3548,5 +3557,4 @@ if (Math.min(window.innerWidth, window.innerHeight) <= 768 && 'ontouchstart' in 
     localStorage.removeItem('editAfterAuth');
     setEditMode(true);
   }
-  maybeShowHelp('welcome');
 })();

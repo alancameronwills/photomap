@@ -17,10 +17,10 @@ const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch
 let upload, processPhoto, deletePhotoFiles, withPhotoUrls, withPhotoUrlsMany;
 
 if (IS_AWS) {
-  const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
-  const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+  const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({});
   const BUCKET = process.env.PHOTOS_BUCKET;
+  const REGION = process.env.AWS_REGION || 'eu-west-2';
 
   upload = multer({
     storage: multer.memoryStorage(),
@@ -49,19 +49,26 @@ if (IS_AWS) {
     await Promise.all([del(`originals/${filename}`), del(`thumbs/${thumbFilename}`)]);
   };
 
-  const sign = key => getSignedUrl(s3, new GetObjectCommand({ Bucket: BUCKET, Key: key }), { expiresIn: 3600 });
+  // Photos are served from the bucket via stable public URLs — a public-read
+  // bucket policy on originals/* and thumbs/* (see PhotomapBucketPolicy in
+  // template.yaml). No presigning: building a URL is a synchronous string
+  // concat, so /api/pois does zero per-photo signing, and the URLs are
+  // immutable and long-cacheable (no expiry, no refresh needed).
+  const photoUrl = key => `https://${BUCKET}.s3.${REGION}.amazonaws.com/${key}`;
 
-  withPhotoUrls = async (poi) => {
+  const attachUrls = (poi) => {
     if (!poi) return poi;
-    const photos = await Promise.all((poi.photos || []).map(async ph => ({
-      ...ph,
-      url:       ph.filename       ? await sign(`originals/${ph.filename}`)       : null,
-      thumb_url: ph.thumb_filename ? await sign(`thumbs/${ph.thumb_filename}`)     : null,
-    })));
-    return { ...poi, photos };
+    return {
+      ...poi,
+      photos: (poi.photos || []).map(ph => ({
+        ...ph,
+        url:       ph.filename       ? photoUrl(`originals/${ph.filename}`) : null,
+        thumb_url: ph.thumb_filename ? photoUrl(`thumbs/${ph.thumb_filename}`) : null,
+      })),
+    };
   };
-
-  withPhotoUrlsMany = pois => Promise.all(pois.map(withPhotoUrls));
+  withPhotoUrls     = attachUrls;
+  withPhotoUrlsMany = pois => pois.map(attachUrls);
 
 } else {
   const uploadDir = path.join(__dirname, '..', 'uploads', 'originals');
