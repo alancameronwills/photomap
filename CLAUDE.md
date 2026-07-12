@@ -73,6 +73,7 @@ Both db modules export the same function signatures:
 - `deleteRouteNode(id)` — returns `{deletedNodeIds, routeDeleted, routeId}`; cascades the route when ≤1 node remains
 - `insertRouteNode(routeId, afterNodeId, lat, lng, poiId)` — inserts between two nodes using floating-point bisection of `order_index`
 - `splitRoute(routeId, splitNodeId)` — deletes the split node, moves tail nodes (≥2) to a new route, cleans up degenerate remainders; returns `{headDeleted, deletedHeadNodeIds, deletedTailNodeIds, newRoute}`
+- `joinRoutes(keepRouteId, poiId)` — merges the two routes that **terminate** at a shared POI. Requires exactly two of the POI's linked nodes to be endpoints (start/end) of their routes, in two distinct routes (one being `keepRouteId`); else returns `null`. Other linked nodes at the POI are ignored: nodes of routes passing *through* the POI (POI is mid-route), and **degenerate routes whose every node sits on the POI** (zero-extent leftovers — e.g. cruft from repeated POI clicks) are skipped so they don't block a real 2-route junction. Orients both routes so `keepRouteId`'s node is the junction, drops the other route's terminating node, moves the remaining nodes into `keepRouteId`, renumbers `order_index` 0..n, and deletes the other route. The two terminating nodes collapse to one intermediate node (`keepRouteId`'s survives). Returns `{route, deletedRouteId, deletedNodeId}` (`route` is the surviving route with its merged nodes, built directly rather than re-queried so DynamoDB's eventually-consistent GSI can't return stale order).
 
 **`routes/auth.js`** — stateless single-user auth. Login compares plaintext against `ADMIN_PASSWORD`, calls `req.session.save()` explicitly before responding (required on Lambda where the process may freeze before the async session write completes).
 
@@ -86,7 +87,7 @@ Coordinates on the POI and route-node create/update endpoints are coerced throug
 
 `PUT /api/photos/:id` updates a photo's `caption`, `direction` (1/2/null), `markerX`/`markerY` (0–1 fractions), and `markerRotation` (0=down, 1=left, 2=right). Called in bulk when the POI edit dialog is saved.
 
-`POST /routes/:id/split` delegates to `db.splitRoute`. `DELETE /route-nodes/:id` returns the full deletion result so the client can do surgical cleanup.
+`POST /routes/:id/split` delegates to `db.splitRoute`. `POST /routes/:id/join` (body `{poiId}`, `:id` = the surviving route) delegates to `db.joinRoutes`, returning 409 when the two routes aren't joinable at that POI. `DELETE /route-nodes/:id` returns the full deletion result so the client can do surgical cleanup.
 
 `POST /api/import-gpx` is the GPX import path (counterpart to the client-side GPX/KML export). The browser parses the GPX with `DOMParser` and posts `{ name, color, trackPoints:[{lat,lng}], waypoints:[{lat,lng,name,desc}] }`. The server creates one route from the track and a POI for each text-bearing waypoint (a waypoint with no `name`/`desc` is skipped entirely), linking every POI to a route node at its location. A waypoint within `WAYPOINT_SNAP_M` (8 m) of a track point reuses that node rather than inserting a new one — so round-tripping our own export reconstructs the original POI-linked nodes; otherwise the waypoint node is inserted just after its nearest track point. With no track present, the waypoints themselves form the route in file order. Routes with fewer than 2 nodes aren't created (`route: null` is returned with the POIs). Photos referenced by waypoint `<link>` are not imported.
 
@@ -196,19 +197,25 @@ State variables: `routeEditMode`, `waitingForRouteStart`, `activeRouteId`, `exte
 
 **Entry flow** (`waitingForRouteStart = true`):
 - Click a start/end node → activates that route for extension, selects the node (falls through — no early return)
-- Click a POI with exactly one linked endpoint → extends that route
+- Click a POI → `routeEditPoiClick(poiId)` (see below); a lone endpoint POI also arms extension
 - Click map → `createNewRouteAndActivate()` creates a new route
 - Click a polyline segment → inserts node into that route (also activates it)
 
+**POI click — `routeEditPoiClick(poiId)`** — POI-linked route nodes render 0×0 (hidden behind the POI marker), so the POI marker is the click target that stands in for its node(s). Re-clicking the selected POI toggles the selection off (and returns to `waitingForRouteStart`). With no node at the POI, or while a route is actively being built (`activeRouteId && !waitingForRouteStart`), it falls back to `addNodeAtPoi` (start a new route / route the active route through the POI). Otherwise it `selectNode`s the POI's node — exposing Delete/Split/Delete-Route and, for a POI where two routes terminate, Join Routes; a lone endpoint additionally arms extension (mirroring a direct node click). The selected POI shows a red highlight ring via `setPoiHighlight(poiId, on)` (toggles `.poi-selected` on the marker's `_icon`; tracked in `highlightedPoiId`, set/cleared by `selectNode`/`deselectNode`).
+
 **Polyline click / segment insert** — `poly.on('click')` calls both `L.DomEvent.stopPropagation(e)` AND `e.originalEvent.stopPropagation()` to prevent the map's click handler from also firing (Leaflet's `stopPropagation` on a layer event only sets an internal flag, not the native DOM event). Uses `findClosestSegmentIndex` (perpendicular pixel distance) to identify the segment, then calls `POST /routes/:id/nodes` with `afterNodeId`.
 
-**Node icons** — POI-linked nodes render as 0×0 (hidden behind the POI marker) unless selected. Unlinked nodes are also 0×0 outside route-edit mode. `ZERO_ICON` is a shared `L.divIcon` with `iconSize: [0,0]`.
+**Node icons** — POI-linked nodes always render as 0×0 (hidden behind the POI marker, even when selected — the POI marker carries the selection highlight instead). Unlinked nodes are 0×0 outside route-edit mode unless selected. `ZERO_ICON` is a shared `L.divIcon` with `iconSize: [0,0]`.
 
 **Selection** — `selectNode` / `deselectNode` enable/disable Delete Node, Split Route, Delete Route buttons and the colour picker. The colour picker reflects the selected node's route and persists on `change`.
 
 **Keyboard shortcuts** (route-edit mode only, ignored in inputs): `Delete` → delete selected node; `Ctrl+Z` → undo last added node.
 
 **Split route** — `splitSelectedRoute()` calls `POST /routes/:id/split`; cleans up stale markers for moved tail nodes before calling `renderRoute` on the new route.
+
+**Join routes** — when the selected POI has exactly two routes terminating at it, `updateJoinRoutesBtn()` (called from `selectNode`/`deselectNode`/`syncRouteEditMenu`) reveals the `Join Routes` control (desktop `#btn-join-routes`, hidden via the `hidden` attribute otherwise; mobile `#mob-join-routes` in the Route menu). `findJoinableRoutesAtPoi(poiId)` is the joinability test — exactly two of the POI's linked nodes are route endpoints, in two distinct routes; routes passing *through* the POI and degenerate routes (every node on the POI) are ignored — returning `{a, b}` (each `{node, route}`). `joinSelectedRoutes()` posts `POST /routes/:id/join` with the survivor = the selected node's route when it's one of the two terminating routes, else `a.route`; on success it removes the merged-away route's polyline and the deleted terminating node marker, then `renderRoute`s the returned merged route (whose `clearRoute` re-keys the moved-in nodes' markers).
+
+**Co-located-node cleanup** — a node that ends up within `NODE_COLOCATE_M` (1 m ground, via `map.distance`) of an adjacent same-route node is redundant and gets deleted (cascading the route below 2 nodes). `dedupeNodeIfColocated(nodeId)` runs after every create/move (`addNodeToRoute`, polyline-insert, node `dragend`). `dedupePoiColocatedNodes(poiId)` sweeps all of a POI's linked nodes and fires from `deselectNode` whenever a POI selection is cleared (and thus on route-edit exit) — this gradually dissolves degenerate routes (every node on one POI) as their nodes cascade. The sweep is skipped (via the `dedupeSuppressed` flag) around the `deselectNode` inside delete-node/split/join/delete-route so it doesn't race those operations.
 
 **Cascade on POI delete** — `deleteCurrentPoi()` calls `DELETE /pois/:id` which returns `{deletedNodeIds, deletedRouteIds}`; client does surgical cleanup of markers, polylines and route state before removing the POI marker.
 

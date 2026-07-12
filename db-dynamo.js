@@ -388,6 +388,75 @@ async function splitRoute(routeId, splitNodeId) {
   return { splitNodeId, originalRouteId: routeId, headDeleted, deletedHeadNodeIds, deletedTailNodeIds, newRoute };
 }
 
+// Joins the two routes that terminate at a shared POI. See db-sqlite.js#joinRoutes
+// for the contract. Returns {route, deletedRouteId, deletedNodeId} or null.
+async function joinRoutes(keepRouteId, poiId) {
+  const { Item: keepRoute } = await docClient.send(new GetCommand({ TableName: ROUTES_TABLE, Key: { id: keepRouteId } }));
+  if (!keepRoute) return null;
+  const { Items: linked = [] } = await docClient.send(new QueryCommand({
+    TableName: NODES_TABLE,
+    IndexName: 'poi_id-index',
+    KeyConditionExpression: 'poi_id = :pid',
+    ExpressionAttributeValues: { ':pid': poiId },
+  }));
+  if (linked.length < 2) return null;
+  const routeIds = [...new Set(linked.map(n => n.route_id))];
+
+  const orderedNodes = async (rid) => {
+    const { Items = [] } = await docClient.send(new QueryCommand({
+      TableName: NODES_TABLE,
+      IndexName: 'route_id-order_index-index',
+      KeyConditionExpression: 'route_id = :rid',
+      ExpressionAttributeValues: { ':rid': rid },
+      ScanIndexForward: true,
+    }));
+    return Items.sort((a, b) => a.order_index - b.order_index);
+  };
+  const ordered = {};
+  for (const rid of routeIds) ordered[rid] = await orderedNodes(rid);
+  const isEnd = (rid, nodeId) => { const ns = ordered[rid]; return ns.length > 0 && (ns[0].id === nodeId || ns[ns.length - 1].id === nodeId); };
+  // Ignore degenerate routes whose every node sits on this POI (zero-extent leftovers).
+  const degenerate = new Set(routeIds.filter(rid => ordered[rid].every(x => x.poi_id === poiId)));
+  const endpoints = linked.filter(n => !degenerate.has(n.route_id) && isEnd(n.route_id, n.id));
+  const endRouteIds = [...new Set(endpoints.map(n => n.route_id))];
+  if (endpoints.length !== 2 || endRouteIds.length !== 2 || !endRouteIds.includes(keepRouteId)) return null;
+  const dropRouteId = endRouteIds.find(r => r !== keepRouteId);
+  const nodeA = endpoints.find(n => n.route_id === keepRouteId);
+  const nodeB = endpoints.find(n => n.route_id === dropRouteId);
+
+  // Orient so nodeA is last of A and nodeB is first of B; nodeB is then dropped.
+  let aNodes = ordered[keepRouteId];
+  let bNodes = ordered[dropRouteId];
+  if (aNodes[0].id === nodeA.id) aNodes = aNodes.slice().reverse();
+  if (bNodes[bNodes.length - 1].id === nodeB.id) bNodes = bNodes.slice().reverse();
+  const bRest = bNodes.slice(1);
+
+  await docClient.send(new DeleteCommand({ TableName: NODES_TABLE, Key: { id: nodeB.id } }));
+
+  // Reassign moved nodes into the keep route and renumber the whole merged
+  // sequence. Batch in TransactWrite chunks (25-item limit).
+  const merged = [...aNodes, ...bRest];
+  const moved = new Set(bRest.map(n => n.id));
+  const writes = merged.map((n, i) => ({
+    Update: {
+      TableName: NODES_TABLE,
+      Key: { id: n.id },
+      UpdateExpression: moved.has(n.id) ? 'SET order_index = :oi, route_id = :rid' : 'SET order_index = :oi',
+      ExpressionAttributeValues: moved.has(n.id) ? { ':oi': i, ':rid': keepRouteId } : { ':oi': i },
+    },
+  }));
+  for (let i = 0; i < writes.length; i += 25) {
+    await docClient.send(new TransactWriteCommand({ TransactItems: writes.slice(i, i + 25) }));
+  }
+
+  await docClient.send(new DeleteCommand({ TableName: ROUTES_TABLE, Key: { id: dropRouteId } }));
+
+  // Build the merged route from what we just wrote — the GSI is eventually
+  // consistent, so a re-query could return the pre-update order.
+  const mergedRoute = { ...keepRoute, nodes: merged.map((n, i) => ({ ...n, route_id: keepRouteId, order_index: i })) };
+  return { route: mergedRoute, deletedRouteId: dropRouteId, deletedNodeId: nodeB.id };
+}
+
 // A node's project always matches its route's. Used when no sibling node is
 // available to copy project_id from (e.g. the first node added to a route).
 async function routeProjectId(routeId) {
@@ -562,6 +631,7 @@ async function _batchDeleteItems(tableName, ids) {
 module.exports = {
   haversineMeters,
   splitRoute,
+  joinRoutes,
   insertRouteNode,
   findNearestPoi,
   getAllProjects,

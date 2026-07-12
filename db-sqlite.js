@@ -321,6 +321,56 @@ function splitRoute(routeId, splitNodeId) {
   })();
 }
 
+// Joins the two routes that terminate at a shared POI. `keepRouteId` is the
+// surviving route (its colour/name/direction names persist); the other route is
+// merged into it and deleted. Exactly two of the POI's linked nodes must be
+// endpoints of their routes, in two distinct routes (one being keepRouteId) —
+// other linked nodes at the POI (routes passing through it) are ignored. The two
+// endpoint nodes at the POI collapse to a single intermediate node (keepRouteId's
+// survives; the other is deleted). Returns {route, deletedRouteId, deletedNodeId}
+// or null if the preconditions fail.
+function joinRoutes(keepRouteId, poiId) {
+  return db.transaction(() => {
+    if (!db.prepare('SELECT id FROM routes WHERE id = ?').get(keepRouteId)) return null;
+    const linked = db.prepare('SELECT * FROM route_nodes WHERE poi_id = ?').all(poiId);
+    if (linked.length < 2) return null;
+    const routeIds = [...new Set(linked.map(n => n.route_id))];
+    const ordered = {};
+    for (const rid of routeIds)
+      ordered[rid] = db.prepare('SELECT * FROM route_nodes WHERE route_id = ? ORDER BY order_index ASC, id ASC').all(rid);
+    const isEnd = (rid, nodeId) => { const ns = ordered[rid]; return ns.length > 0 && (ns[0].id === nodeId || ns[ns.length - 1].id === nodeId); };
+    // Ignore degenerate routes whose every node sits on this POI (zero-extent leftovers).
+    const degenerate = new Set(routeIds.filter(rid => ordered[rid].every(x => x.poi_id === poiId)));
+    const endpoints = linked.filter(n => !degenerate.has(n.route_id) && isEnd(n.route_id, n.id));
+    const endRouteIds = [...new Set(endpoints.map(n => n.route_id))];
+    if (endpoints.length !== 2 || endRouteIds.length !== 2 || !endRouteIds.includes(keepRouteId)) return null;
+    const dropRouteId = endRouteIds.find(r => r !== keepRouteId);
+    const nodeA = endpoints.find(n => n.route_id === keepRouteId);
+    const nodeB = endpoints.find(n => n.route_id === dropRouteId);
+
+    // Orient so nodeA is last of A and nodeB is first of B; nodeB is then dropped.
+    let aNodes = ordered[keepRouteId];
+    let bNodes = ordered[dropRouteId];
+    if (aNodes[0].id === nodeA.id) aNodes = aNodes.slice().reverse();
+    if (bNodes[bNodes.length - 1].id === nodeB.id) bNodes = bNodes.slice().reverse();
+    const bRest = bNodes.slice(1);
+
+    db.prepare('DELETE FROM route_nodes WHERE id = ?').run(nodeB.id);
+    if (bRest.length) {
+      const placeholders = bRest.map(() => '?').join(',');
+      db.prepare(`UPDATE route_nodes SET route_id = ? WHERE id IN (${placeholders})`).run(keepRouteId, ...bRest.map(n => n.id));
+    }
+    // bRest already reassigned, nodeB deleted — the cascade removes nothing.
+    db.prepare('DELETE FROM routes WHERE id = ?').run(dropRouteId);
+
+    const merged = [...aNodes, ...bRest];
+    const upd = db.prepare('UPDATE route_nodes SET order_index = ? WHERE id = ?');
+    merged.forEach((n, i) => upd.run(i, n.id));
+
+    return { route: getRouteById(keepRouteId), deletedRouteId: dropRouteId, deletedNodeId: nodeB.id };
+  })();
+}
+
 function insertRouteNode(routeId, afterNodeId, lat, lng, poiId) {
   const after = db.prepare('SELECT order_index FROM route_nodes WHERE id = ?').get(afterNodeId);
   if (!after) return null;
@@ -413,6 +463,7 @@ function syncPoiNodes(poiId, lat, lng) {
 module.exports = {
   haversineMeters,
   splitRoute,
+  joinRoutes,
   insertRouteNode,
   findNearestPoi,
   getAllProjects,

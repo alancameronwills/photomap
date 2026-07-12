@@ -400,6 +400,14 @@ router.post('/routes/:id/split', requireAuth, wrap(async (req, res) => {
   res.json(result);
 }));
 
+router.post('/routes/:id/join', requireAuth, wrap(async (req, res) => {
+  const { poiId } = req.body;
+  if (poiId == null) return res.status(400).json({ error: 'poiId required' });
+  const result = await Promise.resolve(db.joinRoutes(parseId(req.params.id), IS_AWS ? poiId : Number(poiId)));
+  if (!result) return res.status(409).json({ error: 'Routes are not joinable at this POI' });
+  res.json(result);
+}));
+
 router.delete('/routes/:id', requireAuth, wrap(async (req, res) => {
   if (!await Promise.resolve(db.getRouteById(parseId(req.params.id)))) return res.status(404).json({ error: 'Not found' });
   await Promise.resolve(db.deleteRoute(parseId(req.params.id)));

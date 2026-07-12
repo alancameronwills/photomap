@@ -877,7 +877,7 @@ function addOrUpdateMarker(poi) {
   marker.on('click', (e) => {
     L.DomEvent.stopPropagation(e);
     if (routeEditMode) {
-      addNodeAtPoi(poi.id);
+      routeEditPoiClick(poi.id);
     } else if (editMode) {
       openEditDialog(poi.id);
     } else {
@@ -1784,6 +1784,8 @@ let routeNodeMarkers = {}; // nodeId  → L.Marker
 let nodeRouteId = {};      // nodeId  → routeId
 let activeRouteId = null;
 let selectedNodeId = null;
+let highlightedPoiId = null; // POI marker currently showing the selection highlight
+let dedupeSuppressed = false; // set by delete/split/join so their deselect doesn't also dedupe
 let undoStack = [];         // nodeIds added in the current route-edit session
 let waitingForRouteStart = false; // true until the first meaningful click after entering route-edit
 let extendingFromStart = false;   // true when prepending (user clicked the start node)
@@ -1791,10 +1793,12 @@ let extendingFromStart = false;   // true when prepending (user clicked the star
 const ZERO_ICON = L.divIcon({ html: '', className: '', iconSize: [0, 0], iconAnchor: [0, 0] });
 
 function nodeIcon(node, selected) {
-  // Linked nodes sit exactly on their POI — hide unless selected.
-  if (node.poi_id && !selected) return ZERO_ICON;
+  // Linked nodes sit exactly on their POI and are never clickable directly — the
+  // POI marker stands in for them (and carries the selection highlight), so they
+  // stay hidden even when selected.
+  if (node.poi_id) return ZERO_ICON;
   // Unlinked nodes are only shown in route-edit mode.
-  if (!node.poi_id && !routeEditMode && !selected) return ZERO_ICON;
+  if (!routeEditMode && !selected) return ZERO_ICON;
   const cls = ['route-node'];
   if (node.poi_id) cls.push('poi-linked');
   if (selected) cls.push('selected');
@@ -1860,6 +1864,8 @@ function setupNodeMarkerEvents(marker, node) {
       }
       const snapped = await trySnapNodeToPoi(node);
       if (!snapped) await api('PUT', `/route-nodes/${node.id}`, { lat: ll.lat, lng: ll.lng, poiId: null });
+      // Remove the node if the drag left it on top of a same-route neighbour.
+      await dedupeNodeIfColocated(node.id);
     } catch (e) { console.error('Node save failed', e); }
   });
 }
@@ -1909,6 +1915,8 @@ function renderRoute(route) {
       routeNodeMarkers[node.id] = marker;
       enableNodeDrag(marker);
       redrawPolyline(route.id);
+      // Discard the inserted node if it fell within 1 m of a segment endpoint.
+      await dedupeNodeIfColocated(node.id);
     } catch (err) { console.error('Insert node failed:', err); }
   });
 
@@ -2116,6 +2124,7 @@ const routeEditIndicator = $('route-edit-indicator');
 const routeColorInput    = $('route-color-input');
 const btnDeleteNode      = $('btn-delete-node');
 const btnSplitRoute      = $('btn-split-route');
+const btnJoinRoutes      = $('btn-join-routes');
 const btnDeleteRoute     = $('btn-delete-route');
 const btnExportGpx       = $('btn-export-gpx');
 const btnExportKml       = $('btn-export-kml');
@@ -2154,11 +2163,41 @@ function findLinkedStartEndNode(poiId) {
   return isStartOrEnd(node.id, route) ? { node, route } : null;
 }
 
+// If exactly two routes terminate at poiId — i.e. exactly two of the POI's linked
+// nodes are endpoints (start/end) of their routes, in two distinct routes —
+// returns those two {node, route} pairs as {a, b}; else null. Other linked nodes
+// at the POI (routes passing *through* it) are ignored: only terminating routes
+// can be joined end-to-end.
+function findJoinableRoutesAtPoi(poiId) {
+  const endpoints = [];
+  for (const route of Object.values(routes)) {
+    // Ignore degenerate routes whose every node sits on this POI (zero-extent
+    // leftovers) — they can't meaningfully be joined and would just block real ones.
+    if (route.nodes.length && route.nodes.every(n => n.poi_id === poiId)) continue;
+    for (const node of route.nodes) {
+      if (node.poi_id === poiId && isStartOrEnd(node.id, route)) endpoints.push({ node, route });
+    }
+  }
+  const routeIds = new Set(endpoints.map(e => e.route.id));
+  if (endpoints.length !== 2 || routeIds.size !== 2) return null;
+  return { a: endpoints[0], b: endpoints[1] };
+}
+
+// Shows the Join Routes control only when the selected node sits on a POI where
+// two routes meet end-to-end. Called whenever selection changes.
+function updateJoinRoutesBtn() {
+  const node = selectedNodeId != null ? routes[nodeRouteId[selectedNodeId]]?.nodes.find(n => n.id === selectedNodeId) : null;
+  const joinable = node && node.poi_id != null && findJoinableRoutesAtPoi(node.poi_id);
+  btnJoinRoutes.hidden = !joinable;
+  btnJoinRoutes.disabled = !joinable;
+  $('mob-join-routes').classList.toggle('hidden', !joinable);
+}
+
 function updateRouteHint() {
   const el = document.getElementById('route-edit-hint');
   if (!el) return;
   el.textContent = waitingForRouteStart
-    ? 'click a start/end node or POI to extend a route · click map to start a new route'
+    ? 'click a POI to select it · click a start/end POI then the map to extend · click map for a new route'
     : 'click map · click POI to link · click node to select';
 }
 
@@ -2233,12 +2272,20 @@ function exitRouteEditMode() {
   })();
 }
 
+// Toggles the red selection ring on a POI marker (its route node is hidden, so
+// the POI stands in as the visible selection target in route-edit mode).
+function setPoiHighlight(poiId, on) {
+  const m = poiId != null ? markers[poiId] : null;
+  if (m && m._icon) m._icon.classList.toggle('poi-selected', on);
+}
+
 function selectNode(nodeId) {
   if (selectedNodeId) deselectNode();
   selectedNodeId = nodeId;
   const marker = routeNodeMarkers[nodeId];
   const node = routes[nodeRouteId[nodeId]]?.nodes.find(n => n.id === nodeId);
   if (!marker || !node) return;
+  if (node.poi_id != null) { highlightedPoiId = node.poi_id; setPoiHighlight(node.poi_id, true); }
   // Disable drag before setIcon so the _enabled flag is cleared; the new icon
   // element needs a fresh enable() call after the DOM swap.
   marker.dragging.disable();
@@ -2256,10 +2303,14 @@ function selectNode(nodeId) {
   $('dir1-name-input').value = currentRoute?.dir1_name || '';
   $('dir2-name-input').value = currentRoute?.dir2_name || '';
   $('dir-name-fields').classList.remove('hidden');
+  updateJoinRoutesBtn();
 }
 
 function deselectNode() {
   if (!selectedNodeId) return;
+  // Remember the POI we're leaving so we can sweep its co-located nodes afterwards.
+  const leavingPoiId = highlightedPoiId;
+  if (highlightedPoiId != null) { setPoiHighlight(highlightedPoiId, false); highlightedPoiId = null; }
   const marker = routeNodeMarkers[selectedNodeId];
   const node = routes[nodeRouteId[selectedNodeId]]?.nodes.find(n => n.id === selectedNodeId);
   if (marker && node) {
@@ -2272,15 +2323,63 @@ function deselectNode() {
   btnDeleteNode.disabled = true;
   btnSplitRoute.disabled = true;
   btnDeleteRoute.disabled = true;
+  updateJoinRoutesBtn();
   btnExportGpx.disabled = true;
   btnExportKml.disabled = true;
   routeColorInput.disabled = true;
   setSelectedRoute(null);
   $('dir-name-fields').classList.add('hidden');
+  // Leaving a POI: clean up any of its nodes that sit on a same-route neighbour.
+  // Suppressed while delete/split/join run their own deselect so we don't race them.
+  if (!dedupeSuppressed && leavingPoiId != null) dedupePoiColocatedNodes(leavingPoiId);
 }
 
 function updateUndoBtn() {
   $('btn-undo-node').disabled = undoStack.length === 0;
+}
+
+// ── Co-located-node cleanup ────────────────────────────────────────────────────
+// Nodes that end up sitting on top of an adjacent same-route node add nothing but
+// clutter (and accumulate into degenerate routes). We delete them: on create/move
+// (dedupeNodeIfColocated) and when leaving a POI (dedupePoiColocatedNodes).
+const NODE_COLOCATE_M = 1; // ground metres within which a neighbour counts as co-located
+
+function nodeColocatedWithNeighbour(route, nodeId) {
+  const idx = route.nodes.findIndex(n => n.id === nodeId);
+  if (idx < 0) return false;
+  const node = route.nodes[idx];
+  const nbrs = [];
+  if (idx > 0) nbrs.push(route.nodes[idx - 1]);
+  if (idx < route.nodes.length - 1) nbrs.push(route.nodes[idx + 1]);
+  return nbrs.some(nb => map.distance([node.lat, node.lng], [nb.lat, nb.lng]) <= NODE_COLOCATE_M);
+}
+
+// Deletes nodeId if it sits within NODE_COLOCATE_M of an adjacent node on its
+// route (deleteNode cascades the route when it drops below 2 nodes). Returns true
+// if the node was removed.
+async function dedupeNodeIfColocated(nodeId) {
+  const routeId = nodeRouteId[nodeId];
+  if (routeId === undefined) return false;
+  const route = routes[routeId];
+  if (!route || !nodeColocatedWithNeighbour(route, nodeId)) return false;
+  await deleteNode(nodeId);
+  undoStack = undoStack.filter(id => id !== nodeId);
+  updateUndoBtn();
+  return true;
+}
+
+// Sweeps every node linked to poiId, deleting those co-located with a same-route
+// neighbour. Collapses degenerate routes (all nodes on the POI) route-by-route as
+// their nodes cascade. Called when a POI is deselected / route-edit mode exits.
+async function dedupePoiColocatedNodes(poiId) {
+  const ids = [];
+  for (const route of Object.values(routes))
+    for (const node of route.nodes)
+      if (node.poi_id === poiId) ids.push(node.id);
+  for (const id of ids) {
+    if (nodeRouteId[id] === undefined) continue; // already gone via a route cascade
+    await dedupeNodeIfColocated(id);
+  }
 }
 
 async function deleteNode(nodeId) {
@@ -2305,7 +2404,8 @@ async function deleteNode(nodeId) {
 async function deleteSelectedNode() {
   if (!selectedNodeId) return;
   const nodeId = selectedNodeId;
-  await deleteNode(nodeId);
+  dedupeSuppressed = true;
+  try { await deleteNode(nodeId); } finally { dedupeSuppressed = false; }
   undoStack = undoStack.filter(id => id !== nodeId);
   updateUndoBtn();
 }
@@ -2349,6 +2449,8 @@ async function addNodeToRoute(routeId, lat, lng, poiId) {
     } else {
       redrawPolyline(routeId);
     }
+    // Drop the node again if it landed on top of its new neighbour.
+    await dedupeNodeIfColocated(node.id);
   } catch (e) { console.error('Failed to add node:', e); }
 }
 
@@ -2364,6 +2466,48 @@ async function handleRouteMapClick(e) {
 function createPoiAtNode(node) {
   pendingNodeForPoi = node;
   openNewPoiDialog({ lat: node.lat, lng: node.lng });
+}
+
+// Route-edit POI click. POI-linked route nodes render hidden behind the POI, so
+// the POI marker is the click target that stands in for them:
+//  · no node here (or a route is actively being built) → route building
+//    (start a new route / route the active route through the POI);
+//  · otherwise select the POI's node, exposing Delete/Split/Delete-Route and,
+//    when two routes terminate at the POI, Join Routes. A lone endpoint also arms
+//    extension, exactly as clicking the node itself would.
+function routeEditPoiClick(poiId) {
+  const linked = [];
+  for (const route of Object.values(routes))
+    for (const node of route.nodes)
+      if (node.poi_id === poiId) linked.push({ node, route });
+  const primary = linked[0];
+
+  // Re-clicking the already-selected POI toggles the selection back off.
+  if (primary && selectedNodeId === primary.node.id) {
+    deselectNode();
+    waitingForRouteStart = true;
+    extendingFromStart = false;
+    activeRouteId = null;
+    updateRouteHint();
+    return;
+  }
+
+  // No node here, or mid-build → route building rather than selection.
+  if (linked.length === 0 || (activeRouteId && !waitingForRouteStart)) {
+    addNodeAtPoi(poiId);
+    return;
+  }
+
+  // Idle with a node present: a lone endpoint arms extension (as a node click
+  // would), then select the node so its route operations become available.
+  if (waitingForRouteStart && linked.length === 1 && isStartOrEnd(primary.node.id, primary.route)) {
+    activeRouteId = primary.route.id;
+    extendingFromStart = (primary.route.nodes[0].id === primary.node.id);
+    waitingForRouteStart = false;
+    setActiveRoute(activeRouteId);
+    updateRouteHint();
+  }
+  selectNode(primary.node.id);
 }
 
 async function addNodeAtPoi(poiId) {
@@ -2449,7 +2593,7 @@ async function splitSelectedRoute() {
   const routeId = nodeRouteId[selectedNodeId];
   if (!routeId) return;
   const nodeId = selectedNodeId;
-  deselectNode();
+  dedupeSuppressed = true; deselectNode(); dedupeSuppressed = false;
   try {
     const result = await api('POST', `/routes/${routeId}/split`, { nodeId });
 
@@ -2504,12 +2648,53 @@ async function splitSelectedRoute() {
   } catch (e) { alert('Split failed: ' + e.message); }
 }
 
+async function joinSelectedRoutes() {
+  if (!selectedNodeId) return;
+  const node = routes[nodeRouteId[selectedNodeId]]?.nodes.find(n => n.id === selectedNodeId);
+  if (!node || node.poi_id == null) return;
+  const info = findJoinableRoutesAtPoi(node.poi_id);
+  if (!info) return;
+  const poiId = node.poi_id;
+  // Survivor = the selected node's route when it is one of the two terminating
+  // routes (keeps its colour/name); otherwise the first one.
+  const selRouteId = nodeRouteId[selectedNodeId];
+  const keepRouteId = (info.a.route.id === selRouteId || info.b.route.id === selRouteId)
+    ? selRouteId : info.a.route.id;
+  dedupeSuppressed = true; deselectNode(); dedupeSuppressed = false;
+  try {
+    const result = await api('POST', `/routes/${keepRouteId}/join`, { poiId });
+    const dropRouteId = result.deletedRouteId;
+
+    // Drop the merged-away route's polyline and the removed duplicate node marker.
+    if (routePolylines[dropRouteId]) { map.removeLayer(routePolylines[dropRouteId]); delete routePolylines[dropRouteId]; }
+    if (routeNodeMarkers[result.deletedNodeId]) { map.removeLayer(routeNodeMarkers[result.deletedNodeId]); delete routeNodeMarkers[result.deletedNodeId]; }
+    delete nodeRouteId[result.deletedNodeId];
+    undoStack = undoStack.filter(id => id !== result.deletedNodeId);
+    delete routes[dropRouteId];
+    delete profileCache[keepRouteId];
+    delete profileCache[dropRouteId];
+
+    // renderRoute clears and recreates markers for every node now in the merged
+    // route (including the ones moved over from the deleted route, keyed by id).
+    routes[result.route.id] = result.route;
+    renderRoute(result.route);
+    if (routeEditMode) {
+      for (const n of result.route.nodes) {
+        const m = routeNodeMarkers[n.id];
+        if (m) enableNodeDrag(m);
+      }
+    }
+    if (activeRouteId === dropRouteId) activeRouteId = keepRouteId;
+    updateUndoBtn();
+  } catch (e) { alert('Join failed: ' + e.message); }
+}
+
 async function deleteSelectedRoute() {
   if (!selectedNodeId) return;
   const routeId = nodeRouteId[selectedNodeId];
   if (!routeId) return;
   if (!confirm('Delete this entire route?')) return;
-  deselectNode();
+  dedupeSuppressed = true; deselectNode(); dedupeSuppressed = false;
   try {
     await api('DELETE', `/routes/${routeId}`);
     clearRoute(routeId);
@@ -2523,6 +2708,7 @@ async function deleteSelectedRoute() {
 btnDeleteNode.addEventListener('click', deleteSelectedNode);
 $('btn-undo-node').addEventListener('click', undoLastNode);
 btnSplitRoute.addEventListener('click', splitSelectedRoute);
+btnJoinRoutes.addEventListener('click', joinSelectedRoutes);
 btnDeleteRoute.addEventListener('click', deleteSelectedRoute);
 btnExportGpx.addEventListener('click', exportSelectedRouteGpx);
 btnExportKml.addEventListener('click', exportSelectedRouteKml);
@@ -3459,11 +3645,13 @@ $('btn-mobile-menu').addEventListener('click', (e) => {
 // ── Route-edit mobile menu ────────────────────────────────────────────────────
 const ROUTE_EDIT_MENU_PAIRS = [
   ['mob-split-route',  'btn-split-route'],
+  ['mob-join-routes',  'btn-join-routes'],
   ['mob-delete-route', 'btn-delete-route'],
   ['mob-export-gpx',   'btn-export-gpx'],
   ['mob-export-kml',   'btn-export-kml'],
 ];
 function syncRouteEditMenu() {
+  updateJoinRoutesBtn(); // refresh Join Routes visibility before mirroring
   for (const [mobId, deskId] of ROUTE_EDIT_MENU_PAIRS) {
     $(mobId).disabled = $(deskId).disabled;
   }
