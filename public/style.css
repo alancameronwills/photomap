@@ -1177,6 +1177,10 @@ body.tracking-portrait #layer-switcher {
   pointer-events: none;
   width: 1px; height: 1px;
 }
+/* Toolbar "Route" dropdown (view mode): the menu anchors under its button. */
+.route-menu-wrap { position: relative; display: inline-flex; }
+.route-menu-wrap .mobile-menu { top: 100%; right: 0; }
+
 .route-menu-btn {
   margin-left: auto;
   background: transparent;

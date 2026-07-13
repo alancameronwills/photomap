@@ -53,7 +53,14 @@
     <input type="file" id="gpx-file-input" multiple accept=".gpx,application/gpx+xml,application/xml,text/xml" style="display:none"/>
     <button id="btn-enter-route-edit" class="toolbar-btn hidden" title="Draw routes on the map">Edit Routes</button>
     <button id="btn-edit-mode" class="toolbar-btn" title="Add notes and photos to the map">Edit</button>
-    <button id="btn-profile" class="toolbar-btn" disabled title="Show elevation profile of the selected route">Elevation</button>
+    <div id="route-menu-wrap" class="route-menu-wrap">
+      <button id="btn-route-menu" class="toolbar-btn" disabled title="Actions for the selected route">Route &#x25BE;</button>
+      <div id="route-menu" class="mobile-menu hidden">
+        <button id="rm-profile"    class="mobile-menu-item">Elevation</button>
+        <button id="rm-export-gpx" class="mobile-menu-item">Export GPX</button>
+        <button id="rm-export-kml" class="mobile-menu-item">Export KML</button>
+      </div>
+    </div>
     <button id="btn-tracking" class="toolbar-btn" title="Show POI info as you move map">Track</button>
     <button id="btn-logout" class="toolbar-btn hidden">Sign Out</button>
     <button id="btn-help" class="toolbar-btn toolbar-btn-help" title="Help" aria-label="Help">?</button>
@@ -63,6 +70,8 @@
     <button id="mob-tracking"          class="mobile-menu-item" title="Show POI info as you move the map">Track</button>
     <button id="mob-edit-mode"         class="mobile-menu-item">Edit</button>
     <button id="mob-profile"           class="mobile-menu-item" disabled>Elevation</button>
+    <button id="mob-export-gpx-v"      class="mobile-menu-item" disabled>Export GPX</button>
+    <button id="mob-export-kml-v"      class="mobile-menu-item" disabled>Export KML</button>
     <button id="mob-enter-route-edit"  class="mobile-menu-item hidden">Edit Routes</button>
     <button id="mob-bulk-upload"       class="mobile-menu-item hidden">Upload Photos</button>
     <button id="mob-import-gpx"        class="mobile-menu-item hidden">Import GPX</button>

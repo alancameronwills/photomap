@@ -2128,7 +2128,7 @@ const btnJoinRoutes      = $('btn-join-routes');
 const btnDeleteRoute     = $('btn-delete-route');
 const btnExportGpx       = $('btn-export-gpx');
 const btnExportKml       = $('btn-export-kml');
-const btnProfile         = $('btn-profile');
+const btnRouteMenu       = $('btn-route-menu');
 
 function setActiveRoute(routeId) {
   activeRouteId = routeId;
@@ -2735,7 +2735,9 @@ function buildGpx(route) {
     const poi = pois[n.poi_id];
     if (!poi) continue;
     const photos = poi.photos || [];
-    if (!poi.title && !poi.note && photos.length === 0) continue;
+    // Only export a waypoint when the POI carries text; a photos-only POI is
+    // left out so the export is essentially just the track.
+    if (!poi.title && !poi.note) continue;
     const wptName = poi.title || `Photo${photos.length > 1 ? 's' : ''}`;
     lines.push(`  <wpt lat="${n.lat}" lon="${n.lng}">`);
     lines.push(`    <name>${xmlEscape(wptName)}</name>`);
@@ -2776,10 +2778,18 @@ function safeRouteFilename(route) {
   return (route.name || `route-${route.id}`).replace(/[^a-z0-9_\-]+/gi, '_').replace(/^_+|_+$/g, '') || `route-${route.id}`;
 }
 
+// The route to export: the selected node's route in route-edit mode, else the
+// route selected in view mode (tap a line / track a POI). Lets the same export
+// commands serve both the route-edit indicator and the toolbar Route menu.
+function routeForExport() {
+  const rid = selectedNodeId != null ? nodeRouteId[selectedNodeId] : selectedRouteId;
+  const route = rid != null ? routes[rid] : null;
+  return (route && route.nodes && route.nodes.length) ? route : null;
+}
+
 function exportSelectedRouteGpx() {
-  if (!selectedNodeId) return;
-  const route = routes[nodeRouteId[selectedNodeId]];
-  if (!route || !route.nodes || route.nodes.length === 0) return;
+  const route = routeForExport();
+  if (!route) return;
   downloadBlob(buildGpx(route), `${safeRouteFilename(route)}.gpx`, 'application/gpx+xml');
 }
 
@@ -2852,9 +2862,8 @@ function buildKml(route) {
 }
 
 function exportSelectedRouteKml() {
-  if (!selectedNodeId) return;
-  const route = routes[nodeRouteId[selectedNodeId]];
-  if (!route || !route.nodes || route.nodes.length === 0) return;
+  const route = routeForExport();
+  if (!route) return;
   downloadBlob(buildKml(route), `${safeRouteFilename(route)}.kml`, 'application/vnd.google-earth.kml+xml');
 }
 
@@ -2899,11 +2908,14 @@ function setSelectedRoute(id) {
   if (selectedRouteId && !profilePanel.classList.contains('hidden')) showRouteProfile(selectedRouteId);
 }
 
-// Reflect selection (enabled) + open state (active) on the Profile button; the
-// mobile twin is mirrored by syncMobileMenu.
+// The toolbar Route menu is enabled whenever a route is selected; the Elevation
+// item (and the menu button) show "active" while the profile panel is open. The
+// mobile twins are mirrored by syncMobileMenu.
 function updateProfileBtn() {
-  btnProfile.disabled = selectedRouteId == null;
-  btnProfile.classList.toggle('active', !profilePanel.classList.contains('hidden'));
+  btnRouteMenu.disabled = selectedRouteId == null;
+  const open = !profilePanel.classList.contains('hidden');
+  $('rm-profile').classList.toggle('active', open);
+  btnRouteMenu.classList.toggle('active', open);
   syncMobileMenu();
 }
 
@@ -2913,7 +2925,15 @@ function toggleProfile() {
   if (profilePanel.classList.contains('hidden')) showRouteProfile(selectedRouteId);
   else closeProfile();
 }
-btnProfile.addEventListener('click', toggleProfile);
+// Toolbar "Route" dropdown: open/close, and wire its items to the shared actions.
+btnRouteMenu.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (btnRouteMenu.disabled) return;
+  $('route-menu').classList.toggle('hidden');
+});
+$('rm-profile').addEventListener('click', () => { $('route-menu').classList.add('hidden'); toggleProfile(); });
+$('rm-export-gpx').addEventListener('click', () => { $('route-menu').classList.add('hidden'); exportSelectedRouteGpx(); });
+$('rm-export-kml').addEventListener('click', () => { $('route-menu').classList.add('hidden'); exportSelectedRouteKml(); });
 
 // Shrink the map from the bottom by the panel's height (pushing it up rather than
 // overlaying it), then let Leaflet re-render to the new size.
@@ -3610,7 +3630,6 @@ function syncMobileMenu() {
   const pairs = [
     ['mob-tracking', 'btn-tracking'],
     ['mob-edit-mode', 'btn-edit-mode'],
-    ['mob-profile', 'btn-profile'],
     ['mob-bulk-upload', 'btn-bulk-upload'],
     ['mob-import-gpx', 'btn-import-gpx'],
     ['mob-enter-route-edit', 'btn-enter-route-edit'],
@@ -3623,6 +3642,12 @@ function syncMobileMenu() {
     mob.classList.toggle('active', desk.classList.contains('active'));
     mob.disabled = desk.disabled;
   }
+  // Route actions (Elevation + exports) collapse into the kebab on narrow
+  // screens; they're enabled whenever a route is selected (mirrors the Route
+  // menu button), and Elevation shows active while its panel is open.
+  const routeSelected = !btnRouteMenu.disabled;
+  for (const id of ['mob-profile', 'mob-export-gpx-v', 'mob-export-kml-v']) $(id).disabled = !routeSelected;
+  $('mob-profile').classList.toggle('active', $('rm-profile').classList.contains('active'));
   // Camera button shares the same auth/tracking triggers as the mobile menu.
   if (typeof updateCameraBtn === 'function') updateCameraBtn();
 }
@@ -3635,12 +3660,17 @@ $('btn-mobile-menu').addEventListener('click', (e) => {
   if (opening) syncMobileMenu();
 });
 
-['mob-tracking', 'mob-edit-mode', 'mob-profile', 'mob-bulk-upload', 'mob-import-gpx', 'mob-enter-route-edit', 'mob-logout', 'mob-help'].forEach(id => {
+['mob-tracking', 'mob-edit-mode', 'mob-bulk-upload', 'mob-import-gpx', 'mob-enter-route-edit', 'mob-logout', 'mob-help'].forEach(id => {
   $(id).addEventListener('click', () => {
     $('mobile-menu').classList.add('hidden');
     $(id.replace('mob-', 'btn-')).click();
   });
 });
+// Route actions have no plain btn- twin (they live in the Route dropdown), so
+// wire them straight to the shared handlers.
+$('mob-profile').addEventListener('click', () => { $('mobile-menu').classList.add('hidden'); toggleProfile(); });
+$('mob-export-gpx-v').addEventListener('click', () => { $('mobile-menu').classList.add('hidden'); exportSelectedRouteGpx(); });
+$('mob-export-kml-v').addEventListener('click', () => { $('mobile-menu').classList.add('hidden'); exportSelectedRouteKml(); });
 
 // ── Route-edit mobile menu ────────────────────────────────────────────────────
 const ROUTE_EDIT_MENU_PAIRS = [
@@ -3685,6 +3715,7 @@ $('btn-edit-routes-shortcut').addEventListener('click', () => $('btn-enter-route
 document.addEventListener('click', () => {
   $('mobile-menu').classList.add('hidden');
   $('route-edit-menu').classList.add('hidden');
+  $('route-menu').classList.add('hidden');
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
