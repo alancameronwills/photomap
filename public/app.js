@@ -2074,7 +2074,13 @@ async function connectStrayPoisToRoutes() {
     } catch (e) { console.error('Auto-connect (link node) failed:', e); }
   }
 
-  // Pass 2 — insert a node where a route line passes within 5 m.
+  // Pass 2 — insert a node where a route line passes within 5 m. Anchors are
+  // found against a single snapshot of each route's nodes (not updated as
+  // insertions are decided), so every insertion for a route can be sent in
+  // one bulk request instead of one request per POI — see db.insertRouteNodes
+  // for why a sequentially-awaited per-POI loop would risk the same node-
+  // ordering race as the bulk GPX import ("reversed pairs") bug did.
+  const insertionsByRoute = new Map(); // routeId -> [{poi, afterNodeId}]
   for (const poi of Object.values(pois)) {
     if (connected.has(String(poi.id))) continue;
     let best = null, bestDist = Infinity;
@@ -2086,16 +2092,21 @@ async function connectStrayPoisToRoutes() {
       }
     }
     if (!best || bestDist > 5) continue;
+    if (!insertionsByRoute.has(best.routeId)) insertionsByRoute.set(best.routeId, []);
+    insertionsByRoute.get(best.routeId).push({ poi, afterNodeId: best.afterNode.id });
+  }
+
+  for (const [routeId, group] of insertionsByRoute) {
     try {
-      const node = await api('POST', `/routes/${best.routeId}/nodes`, {
-        lat: poi.lat, lng: poi.lng, afterNodeId: best.afterNode.id, poiId: poi.id,
+      const { nodes } = await api('POST', `/routes/${routeId}/nodes/bulk`, {
+        insertions: group.map(g => ({ afterNodeId: g.afterNodeId, lat: g.poi.lat, lng: g.poi.lng, poiId: g.poi.id })),
       });
-      const route = routes[best.routeId];
-      const idx = route.nodes.findIndex(n => n.id === best.afterNode.id);
-      route.nodes.splice(idx + 1, 0, node);
-      connected.add(String(poi.id));
-      touched.add(best.routeId);
-    } catch (e) { console.error('Auto-connect (insert node) failed:', e); }
+      const route = routes[routeId];
+      route.nodes.push(...nodes);
+      route.nodes.sort((a, b) => a.order_index - b.order_index);
+      for (const g of group) connected.add(String(g.poi.id));
+      touched.add(routeId);
+    } catch (e) { console.error('Auto-connect (bulk insert) failed:', e); }
   }
 
   // Rebuild affected routes (polylines + node markers) from the updated data.
@@ -2422,6 +2433,20 @@ async function undoLastNode() {
   updateUndoBtn();
 }
 
+// Serializes addNodeToRoute calls. Its callers (handleRouteMapClick,
+// addNodeAtPoi) don't await it, so rapid clicks while drawing a route could
+// otherwise fire overlapping POST /routes/:id/nodes requests against the same
+// route; server-side, each one queries DynamoDB's route_id-order_index-index
+// GSI for the current max order_index before writing, and a query can race an
+// still-propagating write from the previous click, handing two nodes the same
+// order_index (the same bug class as the GPX-import "reversed pairs" issue).
+// Chaining every call onto one promise ensures only one is ever in flight.
+let addNodeToRouteChain = Promise.resolve();
+function queueAddNodeToRoute(routeId, lat, lng, poiId) {
+  addNodeToRouteChain = addNodeToRouteChain.then(() => addNodeToRoute(routeId, lat, lng, poiId));
+  return addNodeToRouteChain;
+}
+
 async function addNodeToRoute(routeId, lat, lng, poiId) {
   try {
     const node = await api('POST', `/routes/${routeId}/nodes`, {
@@ -2458,7 +2483,7 @@ async function handleRouteMapClick(e) {
   if (selectedNodeId) deselectNode();
   if (waitingForRouteStart) await createNewRouteAndActivate();
   if (!activeRouteId) return;
-  addNodeToRoute(activeRouteId, e.latlng.lat, e.latlng.lng, null);
+  queueAddNodeToRoute(activeRouteId, e.latlng.lat, e.latlng.lng, null);
 }
 
 // In regular edit mode: clicking an unlinked node opens the new-POI dialog
@@ -2528,7 +2553,7 @@ async function addNodeAtPoi(poiId) {
   if (!activeRouteId) return;
   const poi = pois[poiId];
   if (!poi) return;
-  addNodeToRoute(activeRouteId, poi.lat, poi.lng, poiId);
+  queueAddNodeToRoute(activeRouteId, poi.lat, poi.lng, poiId);
 }
 
 // ── Route edit event wiring ───────────────────────────────────────────────────

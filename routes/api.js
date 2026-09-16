@@ -360,14 +360,13 @@ router.post('/import-gpx', requireAuth, wrap(async (req, res) => {
     for (const ins of (insertAfter[-1] || [])) nodeList.push({ lat: ins.lat, lng: ins.lng, poiId: ins.poiId });
   }
 
-  // 4. A route needs ≥ 2 nodes to be valid; create it and append nodes in order.
+  // 4. A route needs ≥ 2 nodes to be valid; create it and add nodes in one bulk
+  //    call so order_index is assigned from array order (see addRouteNodes).
   let route = null;
   if (nodeList.length >= 2) {
     route = await Promise.resolve(db.createRoute(name, color, projectId));
-    for (const n of nodeList) {
-      await Promise.resolve(db.addRouteNode(route.id, n.lat, n.lng, n.poiId || null, false));
-    }
-    route = await Promise.resolve(db.getRouteById(route.id));
+    const nodes = await Promise.resolve(db.addRouteNodes(route.id, nodeList));
+    route = { ...route, nodes };
   }
 
   const pois = await withPhotoUrlsMany(
@@ -424,6 +423,20 @@ router.post('/routes/:id/nodes', requireAuth, wrap(async (req, res) => {
     return res.json(node);
   }
   res.json(await Promise.resolve(db.addRouteNode(parseId(req.params.id), lat, lng, poiId || null, !!prepend)));
+}));
+
+// Bulk insert — see db.insertRouteNodes for why this exists (a sequentially-
+// awaited loop of single /nodes inserts against one route can still race
+// DynamoDB's GSI). Used by the client's stray-POI auto-connect pass.
+router.post('/routes/:id/nodes/bulk', requireAuth, wrap(async (req, res) => {
+  const insertions = (Array.isArray(req.body.insertions) ? req.body.insertions : [])
+    .map(ins => ({
+      afterNodeId: IS_AWS ? ins.afterNodeId : Number(ins.afterNodeId),
+      lat: finite(ins.lat), lng: finite(ins.lng), poiId: ins.poiId || null,
+    }))
+    .filter(ins => ins.afterNodeId != null && ins.lat !== null && ins.lng !== null);
+  const nodes = await Promise.resolve(db.insertRouteNodes(parseId(req.params.id), insertions));
+  res.json({ nodes });
 }));
 
 router.put('/route-nodes/:id', requireAuth, wrap(async (req, res) => {

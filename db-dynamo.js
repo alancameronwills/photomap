@@ -486,6 +486,54 @@ async function insertRouteNode(routeId, afterNodeId, lat, lng, poiId) {
   return item;
 }
 
+// Bulk counterpart to insertRouteNode — for the same "GSI query races the
+// previous write" reason addRouteNodes exists (see its comment). Used when
+// several nodes are inserted into one route in one operation (e.g. auto-
+// connecting a batch of stray POIs onto nearby route segments): calling
+// insertRouteNode in a sequentially-awaited loop still queries the GSI for
+// "the node after this anchor" on every iteration, and a query can race an
+// insert from an earlier iteration of the same loop. This reads the route's
+// nodes once, bisects order_index for every insertion in memory (stacking
+// insertions that share an anchor in call order, closest to the anchor
+// first), then writes them all in one batchWrite.
+async function insertRouteNodes(routeId, insertions) {
+  if (!insertions.length) return [];
+  const { Items: allNodes = [] } = await docClient.send(new QueryCommand({
+    TableName: NODES_TABLE,
+    IndexName: 'route_id-order_index-index',
+    KeyConditionExpression: 'route_id = :rid',
+    ExpressionAttributeValues: { ':rid': routeId },
+  }));
+  allNodes.sort((a, b) => a.order_index - b.order_index);
+  const project_id = allNodes[0]?.project_id || await routeProjectId(routeId);
+
+  const byAnchor = new Map();
+  for (const ins of insertions) {
+    if (!byAnchor.has(ins.afterNodeId)) byAnchor.set(ins.afterNodeId, []);
+    byAnchor.get(ins.afterNodeId).push(ins);
+  }
+
+  const created = [];
+  for (const [afterNodeId, group] of byAnchor) {
+    const idx = allNodes.findIndex(n => n.id === afterNodeId);
+    if (idx < 0) continue; // stale/unknown anchor — skip this group
+    const anchor = allNodes[idx];
+    const next = allNodes[idx + 1];
+    let low = anchor.order_index;
+    const high = next ? next.order_index : anchor.order_index + 1;
+    for (const ins of group) {
+      const orderIndex = (low + high) / 2;
+      created.push({
+        id: crypto.randomUUID(), route_id: routeId, order_index: orderIndex,
+        lat: ins.lat, lng: ins.lng, project_id, ...(ins.poiId ? { poi_id: ins.poiId } : {}),
+      });
+      low = orderIndex;
+    }
+  }
+  await batchWrite(docClient, NODES_TABLE, created.map(Item => ({ PutRequest: { Item } })));
+  return created;
+}
+
 async function addRouteNode(routeId, lat, lng, poiId, prepend = false) {
   const { Items: items = [] } = await docClient.send(new QueryCommand({
     TableName: NODES_TABLE,
@@ -504,6 +552,26 @@ async function addRouteNode(routeId, lat, lng, poiId, prepend = false) {
   const item = { id, route_id: routeId, order_index: orderIndex, lat, lng, project_id, ...(poiId ? { poi_id: poiId } : {}) };
   await docClient.send(new PutCommand({ TableName: NODES_TABLE, Item: item }));
   return item;
+}
+
+// Populates a brand-new, empty route with nodes in one shot — order_index is
+// assigned 0..n-1 from the array order, not derived from a GSI query. Calling
+// addRouteNode in a loop for a bulk import (e.g. GPX) issues one edge-query +
+// one put per node; on DynamoDB, the route_id-order_index-index GSI is only
+// eventually consistent, so a query can race the previous node's write and
+// see a stale max, handing two nodes the same order_index. Those collide on
+// sort and land in UUID (tiebreak) order instead of import order — the
+// "reversed pairs" bug. Assigning indexes in memory and batch-writing sidesteps
+// the GSI entirely. Only valid for populating an empty route.
+async function addRouteNodes(routeId, nodes) {
+  if (!nodes.length) return [];
+  const project_id = await routeProjectId(routeId);
+  const items = nodes.map((n, i) => ({
+    id: crypto.randomUUID(), route_id: routeId, order_index: i, lat: n.lat, lng: n.lng, project_id,
+    ...(n.poiId ? { poi_id: n.poiId } : {}),
+  }));
+  await batchWrite(docClient, NODES_TABLE, items.map(Item => ({ PutRequest: { Item } })));
+  return items;
 }
 
 async function updateRouteNode(id, { lat, lng, poiId }) {
@@ -633,6 +701,7 @@ module.exports = {
   splitRoute,
   joinRoutes,
   insertRouteNode,
+  insertRouteNodes,
   findNearestPoi,
   getAllProjects,
   getDefaultProjectId,
@@ -653,6 +722,7 @@ module.exports = {
   updateRoute,
   deleteRoute,
   addRouteNode,
+  addRouteNodes,
   updateRouteNode,
   deleteRouteNode,
   deletePoiLinkedNodes,

@@ -385,6 +385,47 @@ function insertRouteNode(routeId, afterNodeId, lat, lng, poiId) {
   return db.prepare('SELECT * FROM route_nodes WHERE id = ?').get(r.lastInsertRowid);
 }
 
+// Bulk counterpart to insertRouteNode; mirrors db-dynamo.js's insertRouteNodes
+// (needed there to avoid a DynamoDB GSI consistency race — see its comment).
+// Reads the route's nodes once, bisects order_index for every insertion in
+// memory (stacking insertions that share an anchor in call order), then
+// inserts them all in one transaction.
+function insertRouteNodes(routeId, insertions) {
+  if (!insertions.length) return [];
+  const allNodes = db.prepare('SELECT * FROM route_nodes WHERE route_id = ? ORDER BY order_index ASC, id ASC').all(routeId);
+
+  const byAnchor = new Map();
+  for (const ins of insertions) {
+    const key = String(ins.afterNodeId);
+    if (!byAnchor.has(key)) byAnchor.set(key, []);
+    byAnchor.get(key).push(ins);
+  }
+
+  const insert = db.prepare(
+    'INSERT INTO route_nodes (route_id, order_index, lat, lng, poi_id, project_id) ' +
+    'VALUES (?, ?, ?, ?, ?, (SELECT project_id FROM routes WHERE id = ?))'
+  );
+  const createdIds = db.transaction(() => {
+    const ids = [];
+    for (const [anchorId, group] of byAnchor) {
+      const idx = allNodes.findIndex(n => String(n.id) === anchorId);
+      if (idx < 0) continue; // stale/unknown anchor — skip this group
+      const anchor = allNodes[idx];
+      const next = allNodes[idx + 1];
+      let low = anchor.order_index;
+      const high = next ? next.order_index : anchor.order_index + 1;
+      for (const ins of group) {
+        const orderIndex = (low + high) / 2;
+        const r = insert.run(routeId, orderIndex, ins.lat, ins.lng, ins.poiId || null, routeId);
+        ids.push(r.lastInsertRowid);
+        low = orderIndex;
+      }
+    }
+    return ids;
+  })();
+  return createdIds.map(id => db.prepare('SELECT * FROM route_nodes WHERE id = ?').get(id));
+}
+
 function addRouteNode(routeId, lat, lng, poiId, prepend = false) {
   let orderIndex;
   if (prepend) {
@@ -399,6 +440,21 @@ function addRouteNode(routeId, lat, lng, poiId, prepend = false) {
     'VALUES (?, ?, ?, ?, ?, (SELECT project_id FROM routes WHERE id = ?))'
   ).run(routeId, orderIndex, lat, lng, poiId || null, routeId);
   return db.prepare('SELECT * FROM route_nodes WHERE id = ?').get(r.lastInsertRowid);
+}
+
+// Populates a brand-new, empty route with nodes in one shot, in a transaction.
+// Mirrors db-dynamo.js's addRouteNodes (needed there to avoid a DynamoDB GSI
+// consistency race); SQLite doesn't have that race, but the signature is kept
+// symmetric across both db modules. Only valid for populating an empty route.
+function addRouteNodes(routeId, nodes) {
+  const insert = db.prepare(
+    'INSERT INTO route_nodes (route_id, order_index, lat, lng, poi_id, project_id) ' +
+    'VALUES (?, ?, ?, ?, ?, (SELECT project_id FROM routes WHERE id = ?))'
+  );
+  db.transaction((nodes) => {
+    nodes.forEach((n, i) => insert.run(routeId, i, n.lat, n.lng, n.poiId || null, routeId));
+  })(nodes);
+  return db.prepare('SELECT * FROM route_nodes WHERE route_id = ? ORDER BY order_index ASC, id ASC').all(routeId);
 }
 
 function updateRouteNode(id, { lat, lng, poiId }) {
@@ -465,6 +521,7 @@ module.exports = {
   splitRoute,
   joinRoutes,
   insertRouteNode,
+  insertRouteNodes,
   findNearestPoi,
   getAllProjects,
   getDefaultProjectId,
@@ -485,6 +542,7 @@ module.exports = {
   updateRoute,
   deleteRoute,
   addRouteNode,
+  addRouteNodes,
   updateRouteNode,
   deleteRouteNode,
   deletePoiLinkedNodes,
